@@ -1,0 +1,19 @@
+{
+  "name": "evergreen-backend",
+  "version": "1.0.0",
+  "description": "Evergreen monorepo — Node.js API gateway + FastAPI analytics service",
+  "private": true,
+  "scripts": {
+    "dev:node":    "cd node && npm run dev",
+    "dev:python":  "cd python && uvicorn app.main:app --reload --port 8000",
+    "dev":         "concurrently \"npm run dev:node\" \"npm run dev:python\"",
+    "install:node": "cd node && npm install",
+    "install:python": "cd python && pip install -r requirements.txt",
+    "build:node":  "cd node && npm run build",
+    "start:node":  "cd node && npm run start",
+    "lint:node":   "cd node && npm run lint"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}

@@ -1,0 +1,25 @@
+# ─── Node ─────────────────────────────────────────────────────────────────────
+node/node_modules/
+node/dist/
+node/logs/
+node/*.tsbuildinfo
+
+# ─── Python ───────────────────────────────────────────────────────────────────
+python/__pycache__/
+python/**/__pycache__/
+python/*.pyc
+python/.venv/
+python/venv/
+
+# ─── Env files (never commit real secrets) ───────────────────────────────────
+node/.env
+python/.env
+# Keep examples
+!node/.env.example
+!python/.env.example
+
+# ─── OS / IDE ─────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
