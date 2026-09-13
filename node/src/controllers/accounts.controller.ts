@@ -20,23 +20,30 @@ export async function listAccounts(req: AuthRequest, res: Response, next: NextFu
   }
 }
 
-/** Public-ish lookup — returns only the account holder name for a given account number.
- *  Requires auth so random people can't enumerate names, but doesn't leak balance/id. */
+/** Lookup account by number — normalises input (strips spaces/dashes) before querying.
+ *  Returns account holder name only. Requires auth to prevent enumeration. */
 export async function lookupAccount(req: AuthRequest, res: Response, next: NextFunction) {
   try {
-    const accountNumber = req.params.account_number?.trim();
-    if (!accountNumber) return errorResponse(res, "Account number required", 400);
+    const raw = req.params.account_number?.trim() ?? "";
+
+    // Strip all non-alphanumeric characters so "384 726 1950" matches "3847261950"
+    // and "EG 3847261950" matches "EG3847261950"
+    const accountNumber = raw.replace(/[\s\-]/g, "").toUpperCase();
+
+    if (!accountNumber || accountNumber.length < 5) {
+      return errorResponse(res, "Account number too short", 400);
+    }
 
     const { data: account, error } = await getSupabase()
       .from("bank_accounts")
-      .select("account_number, user_id")
+      .select("account_number, account_name, currency, account_type, user_id")
       .eq("account_number", accountNumber)
       .maybeSingle();
 
     if (error) throw new AppError(error.message, 500);
     if (!account) return errorResponse(res, "Account not found", 404);
 
-    // Fetch the owner's name
+    // Fetch the owner's full name
     const { data: owner } = await getSupabase()
       .from("users")
       .select("full_name")
@@ -46,6 +53,8 @@ export async function lookupAccount(req: AuthRequest, res: Response, next: NextF
     return successResponse(res, {
       account_number: account.account_number,
       account_name:   owner?.full_name ?? "Account Holder",
+      account_type:   account.account_type,
+      currency:       account.currency,
     });
   } catch (err) {
     next(err);
