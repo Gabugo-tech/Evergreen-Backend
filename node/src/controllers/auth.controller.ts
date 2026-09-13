@@ -90,26 +90,31 @@ export async function register(req: Request, res: Response, next: NextFunction) 
 
     if (userErr) throw new AppError(userErr.message, 500);
 
-    // Create primary checking account with a generated account number
-    const accountNumber = await uniqueAccountNumber();
-    const { error: accErr } = await supabase
-      .from("bank_accounts")
-      .insert({
-        user_id:           userId,
-        account_number:    accountNumber,
-        account_name:      `${body.full_name} — Checking`,
-        account_type:      "checking",
-        currency:          "USD",
-        balance:           0,
-        available_balance: 0,
-        is_primary:        true,
-      });
+    // Skip auto-account creation for the admin — they have a dedicated test account
+    const isAdminEmail = body.email.toLowerCase() === "nnanwubagabriel@gmail.com";
+    let accountNumber = "";
 
-    if (accErr) throw new AppError(accErr.message, 500);
+    if (!isAdminEmail) {
+      // Create primary checking account with a generated account number
+      accountNumber = await uniqueAccountNumber();
+      const { error: accErr } = await supabase
+        .from("bank_accounts")
+        .insert({
+          user_id:           userId,
+          account_number:    accountNumber,
+          account_name:      `${body.full_name} — Checking`,
+          account_type:      "checking",
+          currency:          "USD",
+          balance:           0,
+          available_balance: 0,
+          is_primary:        true,
+        });
 
-    // Log visitor sign-up notification handled by DB trigger
+      if (accErr) throw new AppError(accErr.message, 500);
+    }
+
     const token = signToken(user.id, user.email);
-    return successResponse(res, { token, user, account_number: accountNumber }, "Account created", 201);
+    return successResponse(res, { token, user, account_number: accountNumber || null }, "Account created", 201);
   } catch (err) {
     next(err);
   }
