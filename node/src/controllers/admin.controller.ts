@@ -5,8 +5,7 @@ import { AuthRequest } from "../middleware/auth";
 import { successResponse, errorResponse } from "../utils/response";
 import { AppError } from "../middleware/errorHandler";
 
-const ADMIN_EMAIL      = "nnanwubagabriel@gmail.com";
-const ADMIN_ACCOUNT_ID = "b0000ad0-0000-0000-0000-000000000001";
+const ADMIN_EMAIL = "nnanwubagabriel@gmail.com";
 
 function isAdmin(req: AuthRequest): boolean {
   return req.user?.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
@@ -16,7 +15,7 @@ function isAdmin(req: AuthRequest): boolean {
 export async function listUsers(req: AuthRequest, res: Response, next: NextFunction) {
   try {
     if (!isAdmin(req)) return errorResponse(res, "Forbidden", 403);
-    const limit  = Number(req.query.limit ?? 100);
+    const limit = Number(req.query.limit ?? 100);
     const { data, error } = await getSupabase()
       .from("users")
       .select("id, email, full_name, phone, account_type, kyc_status, is_active, country, created_at")
@@ -27,51 +26,102 @@ export async function listUsers(req: AuthRequest, res: Response, next: NextFunct
   } catch (err) { next(err); }
 }
 
-// ─── Transactions (admin) ─────────────────────────────────────────────────────
+// ─── All transactions (admin) ─────────────────────────────────────────────────
 export async function listAllTransactions(req: AuthRequest, res: Response, next: NextFunction) {
   try {
     if (!isAdmin(req)) return errorResponse(res, "Forbidden", 403);
     const limit = Number(req.query.limit ?? 200);
+
     const { data, error } = await getSupabase()
       .from("transactions")
-      .select(`
-        id, description, amount, currency, type, status,
-        reference, recipient_name, category, created_at,
-        users!inner(email)
-      `)
+      .select("id, description, amount, currency, type, status, reference, recipient_name, category, created_at, user_id")
       .order("created_at", { ascending: false })
       .limit(limit);
+
     if (error) throw new AppError(error.message, 500);
-    // Flatten user email
-    const flat = (data ?? []).map((t: any) => ({
+
+    // Enrich with user emails
+    const userIds = [...new Set((data ?? []).map((t: { user_id: string }) => t.user_id))];
+    let emailMap: Record<string, string> = {};
+    if (userIds.length > 0) {
+      const { data: users } = await getSupabase()
+        .from("users")
+        .select("id, email")
+        .in("id", userIds);
+      emailMap = Object.fromEntries((users ?? []).map((u: { id: string; email: string }) => [u.id, u.email]));
+    }
+
+    const flat = (data ?? []).map((t: { user_id: string }) => ({
       ...t,
-      user_email: t.users?.email ?? null,
-      users: undefined,
+      user_email: emailMap[t.user_id] ?? null,
     }));
+
     return successResponse(res, flat);
   } catch (err) { next(err); }
 }
 
-// ─── Admin test account ───────────────────────────────────────────────────────
+// ─── Admin account — looks up by logged-in admin user's ID ───────────────────
 export async function getAdminAccount(req: AuthRequest, res: Response, next: NextFunction) {
   try {
     if (!isAdmin(req)) return errorResponse(res, "Forbidden", 403);
+
+    // Find the admin's primary account
     const { data, error } = await getSupabase()
       .from("bank_accounts")
-      .select("id, account_number, balance, currency, account_name")
-      .eq("id", ADMIN_ACCOUNT_ID)
+      .select("id, account_number, account_name, balance, currency, is_primary")
+      .eq("user_id", req.user!.id)
+      .order("is_primary", { ascending: false })
+      .limit(1)
       .single();
+
     if (error || !data) {
-      // Account not seeded yet
+      // Fallback: try finding by account number
+      const { data: fallback } = await getSupabase()
+        .from("bank_accounts")
+        .select("id, account_number, account_name, balance, currency")
+        .eq("account_number", "EG0000000001")
+        .single();
+
+      if (fallback) return successResponse(res, fallback);
+
       return successResponse(res, {
-        id: ADMIN_ACCOUNT_ID,
-        account_number: "ADMIN-TEST-001",
-        balance: 1_000_000_000,
-        currency: "USD",
+        id: "admin-account-not-found",
+        account_number: "EG0000000001",
         account_name: "Evergreen Admin Test Account",
+        balance: 1_000_000_000_000,
+        currency: "USD",
       });
     }
+
     return successResponse(res, data);
+  } catch (err) { next(err); }
+}
+
+// ─── Admin transfers — recent transfers made FROM admin account ───────────────
+export async function listAdminTransfers(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    if (!isAdmin(req)) return errorResponse(res, "Forbidden", 403);
+
+    const { data: account } = await getSupabase()
+      .from("bank_accounts")
+      .select("id")
+      .eq("user_id", req.user!.id)
+      .order("is_primary", { ascending: false })
+      .limit(1)
+      .single();
+
+    if (!account) return successResponse(res, []);
+
+    const { data, error } = await getSupabase()
+      .from("transactions")
+      .select("id, reference, amount, currency, recipient_name, recipient_account, description, status, created_at")
+      .eq("account_id", account.id)
+      .eq("type", "debit")
+      .order("created_at", { ascending: false })
+      .limit(20);
+
+    if (error) throw new AppError(error.message, 500);
+    return successResponse(res, data ?? []);
   } catch (err) { next(err); }
 }
 

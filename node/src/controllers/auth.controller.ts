@@ -28,16 +28,20 @@ function signToken(userId: string, email: string, role = "user"): string {
   return jwt.sign({ sub: userId, email, role }, secret, { expiresIn } as jwt.SignOptions);
 }
 
-/** Generate a unique 10-digit account number prefixed with EG */
+/** Generate a unique 10-digit numeric account number (no prefix) */
 function generateAccountNumber(): string {
-  const digits = Math.floor(Math.random() * 9_000_000_000 + 1_000_000_000).toString();
-  return `EG${digits}`;
+  // First digit is always 1-9 (no leading zero), remaining 9 are 0-9
+  const first = Math.floor(Math.random() * 9 + 1).toString();
+  const rest   = Math.floor(Math.random() * 1_000_000_000)
+    .toString()
+    .padStart(9, "0");
+  return `${first}${rest}`;
 }
 
-/** Ensure account number is unique — retry up to 5 times */
+/** Ensure account number is unique — retry up to 10 times */
 async function uniqueAccountNumber(): Promise<string> {
   const supabase = getSupabase();
-  for (let i = 0; i < 5; i++) {
+  for (let i = 0; i < 10; i++) {
     const num = generateAccountNumber();
     const { data } = await supabase
       .from("bank_accounts")
@@ -46,8 +50,9 @@ async function uniqueAccountNumber(): Promise<string> {
       .maybeSingle();
     if (!data) return num;
   }
-  // Fallback: use UUID suffix
-  return `EG${Date.now().toString().slice(-10)}`;
+  // Fallback: timestamp-based 10-digit number
+  const ts = Date.now().toString().slice(-10).padStart(10, "1");
+  return ts;
 }
 
 // ─── Handlers ─────────────────────────────────────────────────────────────────

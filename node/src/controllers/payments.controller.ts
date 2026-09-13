@@ -29,7 +29,7 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
     const body = sendSchema.parse(req.body);
     const supabase = getSupabase();
 
-    // Verify account ownership and sufficient balance
+    // Verify account ownership
     const { data: account, error: accErr } = await supabase
       .from("bank_accounts")
       .select("id, balance, currency")
@@ -38,20 +38,58 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
       .single();
 
     if (accErr || !account) return errorResponse(res, "Account not found", 404);
-    if (account.balance < body.amount) return errorResponse(res, "Insufficient balance", 422);
 
+    // Supabase may return balance as a string for large numeric columns — coerce
+    const balance = Number(account.balance);
     const fee = body.transfer_type === "international" ? 2.5 : 0;
+    const totalDebit = body.amount + fee;
+
+    if (balance < totalDebit) return errorResponse(res, "Insufficient balance", 422);
+
     const reference = `EG${Date.now().toString().slice(-8)}`;
 
-    // Debit the account
+    // 1. Debit sender
     const { error: debitErr } = await supabase
       .from("bank_accounts")
-      .update({ balance: account.balance - body.amount - fee })
+      .update({ balance: balance - totalDebit })
       .eq("id", body.from_account_id);
 
     if (debitErr) throw new AppError(debitErr.message, 500);
 
-    // Record transaction
+    // 2. Credit recipient (if their account exists in the system)
+    const { data: recipientAccount } = await supabase
+      .from("bank_accounts")
+      .select("id, balance, user_id")
+      .eq("account_number", body.to_account_number)
+      .maybeSingle();
+
+    if (recipientAccount) {
+      const recipientBalance = Number(recipientAccount.balance);
+      await supabase
+        .from("bank_accounts")
+        .update({ balance: recipientBalance + body.amount })
+        .eq("id", recipientAccount.id);
+
+      // Record credit transaction for recipient
+      await supabase
+        .from("transactions")
+        .insert({
+          id:               uuidv4(),
+          user_id:          recipientAccount.user_id,
+          account_id:       recipientAccount.id,
+          type:             "credit",
+          status:           "completed",
+          amount:           body.amount,
+          currency:         body.to_currency,
+          description:      body.description,
+          reference,
+          recipient_name:   body.recipient_name,
+          recipient_account: body.to_account_number,
+          category:         "Transfer",
+        });
+    }
+
+    // 3. Record debit transaction for sender
     const { data: tx, error: txErr } = await supabase
       .from("transactions")
       .insert({
@@ -60,7 +98,7 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
         account_id:       body.from_account_id,
         type:             "debit",
         status:           "completed",
-        amount:           -(body.amount + fee),
+        amount:           -(totalDebit),
         currency:         body.from_currency,
         description:      body.description,
         reference,
