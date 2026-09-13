@@ -6,7 +6,7 @@ import { successResponse, errorResponse } from "../utils/response";
 import { AppError } from "../middleware/errorHandler";
 
 const ADMIN_EMAIL      = "nnanwubagabriel@gmail.com";
-const ADMIN_ACCOUNT_ID = "admin-test-00000000-0000-0000-0000-000000000001";
+const ADMIN_ACCOUNT_ID = "b0000ad0-0000-0000-0000-000000000001";
 
 function isAdmin(req: AuthRequest): boolean {
   return req.user?.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
