@@ -21,10 +21,22 @@ const app: Application = express();
 app.use(helmet());
 app.use(compression());
 app.use(cors({
-  origin: [
-    process.env.FRONTEND_URL ?? "http://localhost:3000",
-    "https://evergreen.vercel.app",
-  ],
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, curl, server-to-server)
+    if (!origin) return callback(null, true);
+    const allowed = [
+      process.env.FRONTEND_URL ?? "http://localhost:3000",
+      "http://localhost:3000",
+      "http://localhost:3001",
+      "https://evergreen.vercel.app",
+      "https://evergreen-banking-lac.vercel.app",
+    ];
+    // Also allow any *.vercel.app preview deployment
+    if (allowed.includes(origin) || /https:\/\/.*\.vercel\.app$/.test(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error(`CORS: origin ${origin} not allowed`));
+  },
   credentials: true,
   methods: ["GET","POST","PUT","PATCH","DELETE","OPTIONS"],
   allowedHeaders: ["Content-Type","Authorization","X-Request-ID"],
