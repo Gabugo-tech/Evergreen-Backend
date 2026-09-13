@@ -2,6 +2,7 @@ import { Request, Response, NextFunction } from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
+import { v4 as uuidv4 } from "uuid";
 import { getSupabase } from "../services/supabase";
 import { successResponse, errorResponse } from "../utils/response";
 import { AppError } from "../middleware/errorHandler";
@@ -27,28 +28,51 @@ function signToken(userId: string, email: string, role = "user"): string {
   return jwt.sign({ sub: userId, email, role }, secret, { expiresIn } as jwt.SignOptions);
 }
 
+/** Generate a unique 10-digit account number prefixed with EG */
+function generateAccountNumber(): string {
+  const digits = Math.floor(Math.random() * 9_000_000_000 + 1_000_000_000).toString();
+  return `EG${digits}`;
+}
+
+/** Ensure account number is unique — retry up to 5 times */
+async function uniqueAccountNumber(): Promise<string> {
+  const supabase = getSupabase();
+  for (let i = 0; i < 5; i++) {
+    const num = generateAccountNumber();
+    const { data } = await supabase
+      .from("bank_accounts")
+      .select("id")
+      .eq("account_number", num)
+      .maybeSingle();
+    if (!data) return num;
+  }
+  // Fallback: use UUID suffix
+  return `EG${Date.now().toString().slice(-10)}`;
+}
+
 // ─── Handlers ─────────────────────────────────────────────────────────────────
 export async function register(req: Request, res: Response, next: NextFunction) {
   try {
-    const body = registerSchema.parse(req.body);
+    const body     = registerSchema.parse(req.body);
     const supabase = getSupabase();
 
-    // Check existing
+    // Check existing user
     const { data: existing } = await supabase
       .from("users")
       .select("id")
       .eq("email", body.email)
-      .single();
+      .maybeSingle();
 
-    if (existing) {
-      return errorResponse(res, "Email already registered", 409);
-    }
+    if (existing) return errorResponse(res, "Email already registered", 409);
 
     const password_hash = await bcrypt.hash(body.password, 12);
+    const userId        = uuidv4();
 
-    const { data: user, error } = await supabase
+    // Create user
+    const { data: user, error: userErr } = await supabase
       .from("users")
       .insert({
+        id:           userId,
         email:        body.email,
         full_name:    body.full_name,
         phone:        body.phone,
@@ -59,10 +83,28 @@ export async function register(req: Request, res: Response, next: NextFunction) 
       .select("id, email, full_name, account_type, kyc_status, created_at")
       .single();
 
-    if (error) throw new AppError(error.message, 500);
+    if (userErr) throw new AppError(userErr.message, 500);
 
+    // Create primary checking account with a generated account number
+    const accountNumber = await uniqueAccountNumber();
+    const { error: accErr } = await supabase
+      .from("bank_accounts")
+      .insert({
+        user_id:           userId,
+        account_number:    accountNumber,
+        account_name:      `${body.full_name} — Checking`,
+        account_type:      "checking",
+        currency:          "USD",
+        balance:           0,
+        available_balance: 0,
+        is_primary:        true,
+      });
+
+    if (accErr) throw new AppError(accErr.message, 500);
+
+    // Log visitor sign-up notification handled by DB trigger
     const token = signToken(user.id, user.email);
-    return successResponse(res, { token, user }, "Account created", 201);
+    return successResponse(res, { token, user, account_number: accountNumber }, "Account created", 201);
   } catch (err) {
     next(err);
   }

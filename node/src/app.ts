@@ -11,6 +11,7 @@ import transactionRoutes  from "./routes/transactions.routes";
 import paymentRoutes      from "./routes/payments.routes";
 import notificationRoutes from "./routes/notifications.routes";
 import userRoutes         from "./routes/users.routes";
+import adminRoutes        from "./routes/admin.routes";
 import { errorHandler }   from "./middleware/errorHandler";
 import { logger }         from "./utils/logger";
 
@@ -77,6 +78,7 @@ app.use("/api/accounts",      accountRoutes);
 app.use("/api/transactions",  transactionRoutes);
 app.use("/api/payments",      paymentRoutes);
 app.use("/api/notifications", notificationRoutes);
+app.use("/api/admin",         adminRoutes);
 
 // ─── 404 ──────────────────────────────────────────────────────────────────────
 app.use((_req, res) => {
