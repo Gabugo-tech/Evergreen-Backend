@@ -20,6 +20,38 @@ export async function listAccounts(req: AuthRequest, res: Response, next: NextFu
   }
 }
 
+/** Public-ish lookup — returns only the account holder name for a given account number.
+ *  Requires auth so random people can't enumerate names, but doesn't leak balance/id. */
+export async function lookupAccount(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const accountNumber = req.params.account_number?.trim();
+    if (!accountNumber) return errorResponse(res, "Account number required", 400);
+
+    const { data: account, error } = await getSupabase()
+      .from("bank_accounts")
+      .select("account_number, user_id")
+      .eq("account_number", accountNumber)
+      .maybeSingle();
+
+    if (error) throw new AppError(error.message, 500);
+    if (!account) return errorResponse(res, "Account not found", 404);
+
+    // Fetch the owner's name
+    const { data: owner } = await getSupabase()
+      .from("users")
+      .select("full_name")
+      .eq("id", account.user_id)
+      .single();
+
+    return successResponse(res, {
+      account_number: account.account_number,
+      account_name:   owner?.full_name ?? "Account Holder",
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getAccount(req: AuthRequest, res: Response, next: NextFunction) {
   try {
     const { data, error } = await getSupabase()

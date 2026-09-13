@@ -8,6 +8,9 @@ router.use(authenticate);
 // GET  /api/accounts          — list user's accounts
 router.get("/",          ctrl.listAccounts);
 
+// GET  /api/accounts/lookup/:account_number — look up account holder name
+router.get("/lookup/:account_number", ctrl.lookupAccount);
+
 // POST /api/accounts          — create a new account
 router.post("/",         ctrl.createAccount);
 
