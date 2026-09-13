@@ -34,14 +34,14 @@ export async function listAccounts(req: AuthRequest, res: Response, next: NextFu
   }
 }
 
-/** Lookup account by number — handles both pure-digit and legacy EG-prefixed formats.
- *  Returns account holder name, type and currency only. Requires auth. */
+/** Lookup account by number — pure 10-digit format only.
+ *  Strips spaces/dashes from input before querying. Requires auth. */
 export async function lookupAccount(req: AuthRequest, res: Response, next: NextFunction) {
   try {
     const raw = req.params.account_number?.trim() ?? "";
 
-    // Normalise: strip spaces and dashes, uppercase
-    const normalised = raw.replace(/[\s\-]/g, "").toUpperCase();
+    // Strip spaces, dashes; keep only digits
+    const normalised = raw.replace(/[\s\-]/g, "").replace(/\D/g, "");
 
     if (!normalised || normalised.length < 5) {
       return errorResponse(res, "Account number too short", 400);
@@ -49,26 +49,13 @@ export async function lookupAccount(req: AuthRequest, res: Response, next: NextF
 
     const supabase = getSupabase();
 
-    // Build candidate list: try exact match, and if it starts with EG also try without prefix (and vice versa)
-    const candidates: string[] = [normalised];
-    if (normalised.startsWith("EG")) {
-      candidates.push(normalised.slice(2)); // strip EG prefix → pure digits
-    } else if (/^\d+$/.test(normalised)) {
-      candidates.push(`EG${normalised}`);   // add EG prefix → legacy format
-    }
+    const { data: account, error } = await supabase
+      .from("bank_accounts")
+      .select("account_number, account_name, currency, account_type, user_id")
+      .eq("account_number", normalised)
+      .maybeSingle();
 
-    let account: { account_number: string; account_name: string; currency: string; account_type: string; user_id: string } | null = null;
-
-    for (const candidate of candidates) {
-      const { data, error } = await supabase
-        .from("bank_accounts")
-        .select("account_number, account_name, currency, account_type, user_id")
-        .eq("account_number", candidate)
-        .maybeSingle();
-      if (error) throw new AppError(error.message, 500);
-      if (data) { account = data; break; }
-    }
-
+    if (error) throw new AppError(error.message, 500);
     if (!account) return errorResponse(res, "Account not found", 404);
 
     // Fetch owner's full name
