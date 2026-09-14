@@ -57,7 +57,7 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
       return errorResponse(res, "Insufficient balance", 422);
     }
 
-    const reference = `EG${Date.now().toString().slice(-8)}`;
+    const reference = `EG${Date.now()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
 
     // 1. Debit sender — use string for new balance to preserve precision
     const newBalance = balance - totalDebit;
