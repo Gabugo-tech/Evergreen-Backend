@@ -6,8 +6,11 @@ const router = Router();
 
 // GET /api/accounts/lookup/:account_number
 // Must be registered BEFORE router.use(authenticate) and BEFORE /:id
-// to prevent Express matching "lookup" as an account ID
 router.get("/lookup/:account_number", authenticate, ctrl.lookupAccount);
+
+// GET /api/accounts/resolve?account_number=&bank_code=
+// Resolves external bank account name via Paystack
+router.get("/resolve", authenticate, ctrl.resolveExternalAccount);
 
 router.use(authenticate);
 

@@ -34,6 +34,60 @@ export async function listAccounts(req: AuthRequest, res: Response, next: NextFu
   }
 }
 
+/**
+ * Resolve external bank account name via Paystack.
+ * Query params: account_number, bank_code
+ * Requires auth — prevents anonymous enumeration of names.
+ */
+export async function resolveExternalAccount(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const { account_number, bank_code } = req.query as { account_number?: string; bank_code?: string };
+
+    if (!account_number || !bank_code) {
+      return errorResponse(res, "account_number and bank_code are required", 400);
+    }
+
+    const clean = account_number.replace(/\D/g, "");
+    if (clean.length < 10) {
+      return errorResponse(res, "Account number must be at least 10 digits", 400);
+    }
+
+    const paystackKey = process.env.PAYSTACK_SECRET_KEY;
+    if (!paystackKey) {
+      return errorResponse(res, "External bank resolution is not configured", 503);
+    }
+
+    const paystackRes = await fetch(
+      `https://api.paystack.co/bank/resolve?account_number=${clean}&bank_code=${bank_code}`,
+      {
+        headers: {
+          Authorization: `Bearer ${paystackKey}`,
+          "Content-Type": "application/json",
+        },
+      }
+    );
+
+    const json = await paystackRes.json().catch(() => ({})) as {
+      status: boolean;
+      message: string;
+      data?: { account_name: string; account_number: string; bank_id: number };
+    };
+
+    if (!paystackRes.ok || !json.status || !json.data) {
+      return errorResponse(res, json.message ?? "Could not resolve account. Check the number and bank.", 422);
+    }
+
+    return successResponse(res, {
+      account_number: json.data.account_number,
+      account_name:   json.data.account_name,
+      bank_code,
+      source:         "external",
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
 /** Lookup account by number — pure 10-digit format only.
  *  Strips spaces/dashes from input before querying. Requires auth. */
 export async function lookupAccount(req: AuthRequest, res: Response, next: NextFunction) {
