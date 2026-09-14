@@ -57,7 +57,9 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
       return errorResponse(res, "Insufficient balance", 422);
     }
 
-    const reference = `EG${Date.now()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+    const reference   = `EG${Date.now()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+    const referenceCR = `${reference}-CR`; // credit leg — unique from debit
+    const referenceDR = `${reference}-DR`; // debit leg
 
     // 1. Debit sender — use string for new balance to preserve precision
     const newBalance = balance - totalDebit;
@@ -94,7 +96,7 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
           amount:           body.amount,
           currency:         body.to_currency,
           description:      body.description,
-          reference,
+          reference:        referenceCR,
           recipient_name:   body.recipient_name,
           recipient_account: body.to_account_number,
           category:         "Transfer",
@@ -113,7 +115,7 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
         amount:           -(totalDebit),
         currency:         body.from_currency,
         description:      body.description,
-        reference,
+        reference:        referenceDR,
         recipient_name:   body.recipient_name,
         recipient_account: body.to_account_number,
         category:         "Transfer",
@@ -123,6 +125,7 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
 
     if (txErr) throw new AppError(txErr.message, 500);
 
+    // Return the base reference (without -DR suffix) for the receipt
     return successResponse(res, { transaction: tx, reference, fee }, "Transfer initiated", 201);
   } catch (err) {
     next(err);
