@@ -11,6 +11,32 @@ function isAdmin(req: AuthRequest): boolean {
   return req.user?.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
 }
 
+// ─── Admin stats — real counts from the DB ────────────────────────────────────
+export async function getStats(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    if (!isAdmin(req)) return errorResponse(res, "Forbidden", 403);
+    const supabase = getSupabase();
+
+    const [usersCount, txCount, txVolume, visitorsCount] = await Promise.all([
+      supabase.from("users").select("id", { count: "exact", head: true }),
+      supabase.from("transactions").select("id", { count: "exact", head: true }),
+      supabase.from("transactions").select("amount"),
+      supabase.from("visitor_logs").select("id", { count: "exact", head: true }),
+    ]);
+
+    const volume = (txVolume.data ?? []).reduce(
+      (sum: number, t: { amount: number | string }) => sum + Math.abs(Number(t.amount)), 0
+    );
+
+    return successResponse(res, {
+      total_users:        usersCount.count   ?? 0,
+      total_transactions: txCount.count      ?? 0,
+      total_volume:       volume,
+      total_visitors:     visitorsCount.count ?? 0,
+    });
+  } catch (err) { next(err); }
+}
+
 // ─── Users (admin) ────────────────────────────────────────────────────────────
 export async function listUsers(req: AuthRequest, res: Response, next: NextFunction) {
   try {
@@ -57,6 +83,23 @@ export async function listAllTransactions(req: AuthRequest, res: Response, next:
     }));
 
     return successResponse(res, flat);
+  } catch (err) { next(err); }
+}
+
+// ─── Visitor logs (admin) ─────────────────────────────────────────────────────
+export async function listVisitors(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    if (!isAdmin(req)) return errorResponse(res, "Forbidden", 403);
+    const limit = Number(req.query.limit ?? 100);
+
+    const { data, error } = await getSupabase()
+      .from("visitor_logs")
+      .select("id, ip_address, page, user_email, created_at")
+      .order("created_at", { ascending: false })
+      .limit(limit);
+
+    if (error) throw new AppError(error.message, 500);
+    return successResponse(res, data ?? []);
   } catch (err) { next(err); }
 }
 
