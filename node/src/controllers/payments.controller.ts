@@ -57,9 +57,11 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
       return errorResponse(res, "Insufficient balance", 422);
     }
 
-    const reference   = `EG${Date.now()}${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
-    const referenceCR = `${reference}-CR`; // credit leg — unique from debit
-    const referenceDR = `${reference}-DR`; // debit leg
+    // Generate collision-proof references using UUID segments
+    const baseRef    = uuidv4().replace(/-/g, "").slice(0, 16).toUpperCase();
+    const reference  = `EG${baseRef}`;
+    const referenceCR = `${reference}CR`; // credit leg — distinct from debit
+    const referenceDR = `${reference}DR`; // debit leg
 
     // 1. Debit sender — use string for new balance to preserve precision
     const newBalance = balance - totalDebit;
@@ -84,23 +86,28 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
         .update({ balance: recipientBalance + body.amount })
         .eq("id", recipientAccount.id);
 
-      // Record credit transaction for recipient
-      await supabase
-        .from("transactions")
-        .insert({
-          id:               uuidv4(),
-          user_id:          recipientAccount.user_id,
-          account_id:       recipientAccount.id,
-          type:             "credit",
-          status:           "completed",
-          amount:           body.amount,
-          currency:         body.to_currency,
-          description:      body.description,
-          reference:        referenceCR,
-          recipient_name:   body.recipient_name,
-          recipient_account: body.to_account_number,
-          category:         "Transfer",
-        });
+      // Record credit transaction — wrapped in try/catch so it never blocks the debit
+      try {
+        await supabase
+          .from("transactions")
+          .insert({
+            id:               uuidv4(),
+            user_id:          recipientAccount.user_id,
+            account_id:       recipientAccount.id,
+            type:             "credit",
+            status:           "completed",
+            amount:           body.amount,
+            currency:         body.to_currency,
+            description:      body.description,
+            reference:        referenceCR,
+            recipient_name:   body.recipient_name,
+            recipient_account: body.to_account_number,
+            category:         "Transfer",
+          });
+      } catch (creditErr) {
+        // Log but don't fail — sender's debit must still succeed
+        console.warn("[sendMoney] Credit transaction insert failed:", creditErr);
+      }
     }
 
     // 3. Record debit transaction for sender
