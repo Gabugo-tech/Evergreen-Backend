@@ -14,7 +14,7 @@ const FX_RATES: Record<string, number> = {
 };
 
 const sendSchema = z.object({
-  from_account_id:    z.string().uuid(),
+  from_account_id:    z.string().min(1, "Account ID required"),
   to_account_number:  z.string().min(5),
   recipient_name:     z.string().min(2),
   amount:             z.number().positive(),

@@ -75,22 +75,18 @@ export async function getAdminAccount(req: AuthRequest, res: Response, next: Nex
       .single();
 
     if (error || !data) {
-      // Fallback: try finding by account number (pure digit format)
-      const { data: fallback } = await getSupabase()
+      // Fallback: search by the known admin account number
+      const { data: fallback, error: fallbackErr } = await getSupabase()
         .from("bank_accounts")
         .select("id, account_number, account_name, balance, currency")
         .eq("account_number", "0000000001")
         .single();
 
-      if (fallback) return successResponse(res, fallback);
+      if (fallbackErr || !fallback) {
+        return errorResponse(res, "Admin account not found. Please ensure the admin bank account exists in the database.", 404);
+      }
 
-      return successResponse(res, {
-        id: "admin-account-not-found",
-        account_number: "0000000001",
-        account_name: "Evergreen Admin Test Account",
-        balance: 1_000_000_000_000,
-        currency: "USD",
-      });
+      return successResponse(res, fallback);
     }
 
     return successResponse(res, data);
