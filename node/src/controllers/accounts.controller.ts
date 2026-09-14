@@ -35,53 +35,106 @@ export async function listAccounts(req: AuthRequest, res: Response, next: NextFu
 }
 
 /**
- * Resolve external bank account name via Paystack.
- * Query params: account_number, bank_code
- * Requires auth — prevents anonymous enumeration of names.
+ * Resolve external bank account name.
+ * Query params: account_number, bank_code, country (ISO2, e.g. "NG", "GH", "KE")
+ *
+ * Routing:
+ *   NG (Nigeria)                  → Paystack name enquiry
+ *   GH/KE/ZA/TZ/UG/RW/ZM/CM/SN  → Flutterwave name enquiry
+ *   Everything else               → Returns {can_resolve: false} so UI shows manual entry
  */
 export async function resolveExternalAccount(req: AuthRequest, res: Response, next: NextFunction) {
   try {
-    const { account_number, bank_code } = req.query as { account_number?: string; bank_code?: string };
+    const {
+      account_number,
+      bank_code,
+      country = "NG",
+    } = req.query as { account_number?: string; bank_code?: string; country?: string };
 
     if (!account_number || !bank_code) {
       return errorResponse(res, "account_number and bank_code are required", 400);
     }
 
-    const clean = account_number.replace(/\D/g, "");
-    if (clean.length < 10) {
-      return errorResponse(res, "Account number must be at least 10 digits", 400);
+    const clean      = account_number.replace(/\D/g, "");
+    const countryUC  = country.toUpperCase();
+
+    if (clean.length < 5) {
+      return errorResponse(res, "Account number must be at least 5 digits", 400);
     }
 
-    const paystackKey = process.env.PAYSTACK_SECRET_KEY;
-    if (!paystackKey) {
-      return errorResponse(res, "External bank resolution is not configured", 503);
-    }
-
-    const paystackRes = await fetch(
-      `https://api.paystack.co/bank/resolve?account_number=${clean}&bank_code=${bank_code}`,
-      {
-        headers: {
-          Authorization: `Bearer ${paystackKey}`,
-          "Content-Type": "application/json",
-        },
+    // ── Nigeria: Paystack ──────────────────────────────────────────────────
+    if (countryUC === "NG") {
+      const paystackKey = process.env.PAYSTACK_SECRET_KEY;
+      if (!paystackKey) {
+        return errorResponse(res, "Paystack not configured", 503);
       }
-    );
 
-    const json = await paystackRes.json().catch(() => ({})) as {
-      status: boolean;
-      message: string;
-      data?: { account_name: string; account_number: string; bank_id: number };
-    };
+      const paystackRes = await fetch(
+        `https://api.paystack.co/bank/resolve?account_number=${clean}&bank_code=${bank_code}`,
+        { headers: { Authorization: `Bearer ${paystackKey}` } }
+      );
+      const json = await paystackRes.json().catch(() => ({})) as {
+        status: boolean; message: string;
+        data?: { account_name: string; account_number: string };
+      };
 
-    if (!paystackRes.ok || !json.status || !json.data) {
-      return errorResponse(res, json.message ?? "Could not resolve account. Check the number and bank.", 422);
+      if (!paystackRes.ok || !json.status || !json.data) {
+        return errorResponse(res, json.message ?? "Could not resolve account", 422);
+      }
+
+      return successResponse(res, {
+        account_number: json.data.account_number,
+        account_name:   json.data.account_name,
+        bank_code, country: countryUC, source: "paystack", can_resolve: true,
+      });
     }
 
+    // ── African countries: Flutterwave ────────────────────────────────────
+    const flutterwaveCountries = ["GH","KE","ZA","TZ","UG","RW","ZM","CM","SN","CI","ET","MZ"];
+    if (flutterwaveCountries.includes(countryUC)) {
+      const flwKey = process.env.FLUTTERWAVE_SECRET_KEY;
+      if (!flwKey) {
+        // No key configured — return unresolvable so UI shows manual entry
+        return successResponse(res, {
+          account_number: clean, account_name: null,
+          bank_code, country: countryUC, source: "none", can_resolve: false,
+          message: "Flutterwave not configured — please enter the recipient name manually",
+        });
+      }
+
+      const flwRes = await fetch(
+        `https://api.flutterwave.com/v3/accounts/resolve`,
+        {
+          method:  "POST",
+          headers: {
+            Authorization:  `Bearer ${flwKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ account_number: clean, account_bank: bank_code }),
+        }
+      );
+      const flwJson = await flwRes.json().catch(() => ({})) as {
+        status: string; message: string;
+        data?: { account_name: string; account_number: string };
+      };
+
+      if (!flwRes.ok || flwJson.status !== "success" || !flwJson.data) {
+        return errorResponse(res, flwJson.message ?? "Could not resolve account", 422);
+      }
+
+      return successResponse(res, {
+        account_number: flwJson.data.account_number,
+        account_name:   flwJson.data.account_name,
+        bank_code, country: countryUC, source: "flutterwave", can_resolve: true,
+      });
+    }
+
+    // ── All other countries: no auto-resolution available ─────────────────
+    // (USA requires Plaid OAuth, Europe/Korea don't expose name APIs, etc.)
     return successResponse(res, {
-      account_number: json.data.account_number,
-      account_name:   json.data.account_name,
-      bank_code,
-      source:         "external",
+      account_number: clean, account_name: null,
+      bank_code, country: countryUC, source: "none", can_resolve: false,
+      message: "Automatic name lookup is not available for this country. Please enter the recipient name manually.",
     });
   } catch (err) {
     next(err);
