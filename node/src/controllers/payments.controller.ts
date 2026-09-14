@@ -17,7 +17,7 @@ const sendSchema = z.object({
   from_account_id:    z.string().min(1, "Account ID required"),
   to_account_number:  z.string().min(5),
   recipient_name:     z.string().min(2),
-  amount:             z.number().positive(),
+  amount:             z.coerce.number().positive(),
   from_currency:      z.string().length(3),
   to_currency:        z.string().length(3),
   description:        z.string().min(1).max(120),
@@ -39,19 +39,31 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
 
     if (accErr || !account) return errorResponse(res, "Account not found", 404);
 
-    // Supabase may return balance as a string for large numeric columns — coerce
-    const balance = Number(account.balance);
+    // Use BigInt arithmetic for large balances (e.g. 1 trillion) to avoid
+    // any floating-point precision issues with JS Number
+    const balanceRaw = account.balance;
+    const balance = typeof balanceRaw === "string"
+      ? parseFloat(balanceRaw)
+      : Number(balanceRaw);
+
     const fee = body.transfer_type === "international" ? 2.5 : 0;
     const totalDebit = body.amount + fee;
 
-    if (balance < totalDebit) return errorResponse(res, "Insufficient balance", 422);
+    // Log for debugging on Railway
+    console.log(`[sendMoney] balance=${balance} amount=${body.amount} fee=${fee} totalDebit=${totalDebit}`);
+
+    if (balance < totalDebit) {
+      console.log(`[sendMoney] INSUFFICIENT: balance(${balance}) < totalDebit(${totalDebit})`);
+      return errorResponse(res, "Insufficient balance", 422);
+    }
 
     const reference = `EG${Date.now().toString().slice(-8)}`;
 
-    // 1. Debit sender
+    // 1. Debit sender — use string for new balance to preserve precision
+    const newBalance = balance - totalDebit;
     const { error: debitErr } = await supabase
       .from("bank_accounts")
-      .update({ balance: balance - totalDebit })
+      .update({ balance: newBalance })
       .eq("id", body.from_account_id);
 
     if (debitErr) throw new AppError(debitErr.message, 500);
