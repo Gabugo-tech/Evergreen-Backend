@@ -76,8 +76,39 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
     const referenceCR = `${reference}CR`; // credit leg
     const referenceDR = `${reference}DR`; // debit leg
 
-    // 1. Debit sender — subtract totalDebit (already in the account's currency)
-    //    and keep available_balance in sync.
+    // Check recipient existence first — needed to determine txStatus
+    const { data: recipientAccount } = await supabase
+      .from("bank_accounts")
+      .select("id, balance, available_balance, currency, user_id")
+      .eq("account_number", body.to_account_number)
+      .maybeSingle();
+
+    const txStatus = recipientAccount ? "completed" : "pending";
+
+    // 1. Insert the debit transaction record FIRST — this validates the status
+    //    constraint before any money moves. If this fails, balance is untouched.
+    const { data: tx, error: txErr } = await supabase
+      .from("transactions")
+      .insert({
+        id:                uuidv4(),
+        user_id:           req.user!.id,
+        account_id:        body.from_account_id,
+        type:              "debit",
+        status:            txStatus,
+        amount:            -(body.amount),
+        currency:          fromCurrencyUC,
+        description:       body.description,
+        reference:         referenceDR,
+        recipient_name:    body.recipient_name,
+        recipient_account: body.to_account_number,
+        category:          "Transfer",
+      })
+      .select()
+      .single();
+
+    if (txErr) throw new AppError(txErr.message, 500);
+
+    // 2. Debit sender balance — only runs after transaction record is confirmed
     const newBalance          = balance          - totalDebit;
     const newAvailableBalance = availableBalance - totalDebit;
     const { error: debitErr } = await supabase
@@ -87,21 +118,12 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
 
     if (debitErr) throw new AppError(debitErr.message, 500);
 
-    // 2. Credit recipient if they have an Evergreen account.
-    //    For external banks the debit is recorded and shown as processing —
+    // 3. Credit recipient if they have an Evergreen account.
+    //    For external banks the debit is recorded and shown as pending —
     //    actual settlement would go through a banking API in production.
-    const { data: recipientAccount } = await supabase
-      .from("bank_accounts")
-      .select("id, balance, available_balance, currency, user_id")
-      .eq("account_number", body.to_account_number)
-      .maybeSingle();
-
     if (recipientAccount) {
-      // Bug fix #2: convert the credit amount into the recipient account's own
-      // currency — not the sender's from_currency.
       const recipientCurrency = (recipientAccount.currency as string).toUpperCase();
       const recipientRate     = FX_RATES[recipientCurrency] ?? 1;
-      // amount (in from_currency) → USD → recipient currency
       const creditAmount = (body.amount / fromRate) * recipientRate;
 
       const recipientBalance          = typeof recipientAccount.balance === "string" ? parseFloat(recipientAccount.balance) : Number(recipientAccount.balance);
@@ -124,7 +146,7 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
             account_id:        recipientAccount.id,
             type:              "credit",
             status:            "completed",
-            amount:            creditAmount,          // stored in recipient's currency
+            amount:            creditAmount,
             currency:          recipientCurrency,
             description:       body.description,
             reference:         referenceCR,
@@ -136,30 +158,6 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
         console.warn("[sendMoney] Credit transaction insert failed:", creditErr);
       }
     }
-
-    // External transfers show as "pending" (settlement in progress),
-    // internal as "completed". Both values satisfy the DB status check constraint.
-    const txStatus = recipientAccount ? "completed" : "pending";
-    const { data: tx, error: txErr } = await supabase
-      .from("transactions")
-      .insert({
-        id:                uuidv4(),
-        user_id:           req.user!.id,
-        account_id:        body.from_account_id,
-        type:              "debit",
-        status:            txStatus,
-        amount:            -(body.amount),   // what the user sent, in from_currency
-        currency:          fromCurrencyUC,
-        description:       body.description,
-        reference:         referenceDR,
-        recipient_name:    body.recipient_name,
-        recipient_account: body.to_account_number,
-        category:          "Transfer",
-      })
-      .select()
-      .single();
-
-    if (txErr) throw new AppError(txErr.message, 500);
 
     return successResponse(res, { transaction: tx, reference, fee }, "Transfer initiated", 201);
   } catch (err) {
