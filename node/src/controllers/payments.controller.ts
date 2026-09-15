@@ -67,7 +67,9 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
       `totalDebit=${totalDebit.toFixed(4)} ${accountCurrency}`
     );
 
-    if (balance < totalDebit) {
+    // International transfers are allowed regardless of balance (credit/overdraft behaviour).
+    // Only local transfers are blocked when funds are insufficient.
+    if (body.transfer_type === "local" && balance < totalDebit) {
       console.log(`[sendMoney] INSUFFICIENT: balance(${balance}) < totalDebit(${totalDebit.toFixed(4)})`);
       return errorResponse(res, "Insufficient balance", 422);
     }
