@@ -28,4 +28,7 @@ router.get("/account",      ctrl.getAdminAccount);
 // Admin transfer history
 router.get("/transfers",    ctrl.listAdminTransfers);
 
+// Delete user — removes all DB records + Supabase Auth entry
+router.delete("/users/:id", ctrl.deleteUser);
+
 export default router;
