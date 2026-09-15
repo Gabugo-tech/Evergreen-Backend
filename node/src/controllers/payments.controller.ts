@@ -39,21 +39,36 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
 
     if (accErr || !account) return errorResponse(res, "Account not found", 404);
 
-    // Use BigInt arithmetic for large balances (e.g. 1 trillion) to avoid
-    // any floating-point precision issues with JS Number
     const balanceRaw = account.balance;
     const balance = typeof balanceRaw === "string"
       ? parseFloat(balanceRaw)
       : Number(balanceRaw);
 
     const fee = body.transfer_type === "international" ? 2.5 : 0;
-    const totalDebit = body.amount + fee;
+
+    // Convert the send amount + fee into the account's native currency before
+    // comparing against the balance. Without this, sending $20 USD from an
+    // NGN account would compare 20 against ₦50,000 — correct numerically but
+    // semantically wrong when currencies differ.
+    const accountCurrency  = (account.currency as string).toUpperCase();
+    const fromCurrencyUC   = body.from_currency.toUpperCase();
+    const accountRate      = FX_RATES[accountCurrency] ?? 1;
+    const fromRate         = FX_RATES[fromCurrencyUC]  ?? 1;
+    // Convert: amount_in_account_currency = amount_in_from_currency * (accountRate / fromRate)
+    const amountInAccountCurrency = body.amount * (accountRate / fromRate);
+    const feeInAccountCurrency    = fee         * (accountRate / fromRate);
+    const totalDebit              = amountInAccountCurrency + feeInAccountCurrency;
 
     // Log for debugging on Railway
-    console.log(`[sendMoney] balance=${balance} amount=${body.amount} fee=${fee} totalDebit=${totalDebit}`);
+    console.log(
+      `[sendMoney] balance=${balance} ${accountCurrency} | ` +
+      `send=${body.amount} ${fromCurrencyUC} → ${amountInAccountCurrency.toFixed(4)} ${accountCurrency} | ` +
+      `fee=${fee} → ${feeInAccountCurrency.toFixed(4)} ${accountCurrency} | ` +
+      `totalDebit=${totalDebit.toFixed(4)} ${accountCurrency}`
+    );
 
     if (balance < totalDebit) {
-      console.log(`[sendMoney] INSUFFICIENT: balance(${balance}) < totalDebit(${totalDebit})`);
+      console.log(`[sendMoney] INSUFFICIENT: balance(${balance}) < totalDebit(${totalDebit.toFixed(4)})`);
       return errorResponse(res, "Insufficient balance", 422);
     }
 
@@ -63,7 +78,7 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
     const referenceCR = `${reference}CR`; // credit leg — distinct from debit
     const referenceDR = `${reference}DR`; // debit leg
 
-    // 1. Debit sender — use string for new balance to preserve precision
+    // 1. Debit sender — subtract in the account's native currency
     const newBalance = balance - totalDebit;
     const { error: debitErr } = await supabase
       .from("bank_accounts")
