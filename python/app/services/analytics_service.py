@@ -211,7 +211,7 @@ class AnalyticsService:
             .execute()
         )
         bank_balance = sum(
-            a["balance"] for a in (accounts_res.data or [])
+            float(a["balance"]) for a in (accounts_res.data or [])
         )
 
         pm = self.portfolio_metrics()
