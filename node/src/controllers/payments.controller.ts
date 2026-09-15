@@ -235,12 +235,15 @@ export async function getPaymentHistory(req: AuthRequest, res: Response, next: N
 
 export async function cancelPayment(req: AuthRequest, res: Response, next: NextFunction) {
   try {
+    // Allow cancellation of both "pending" and "processing" transactions —
+    // internal transfers land as "completed" immediately, but external ones
+    // are set to "processing" and are still cancellable before settlement.
     const { data, error } = await getSupabase()
       .from("transactions")
       .update({ status: "cancelled" })
       .eq("id", req.params.id)
       .eq("user_id", req.user!.id)
-      .eq("status", "pending")
+      .in("status", ["pending", "processing"])
       .select()
       .single();
 

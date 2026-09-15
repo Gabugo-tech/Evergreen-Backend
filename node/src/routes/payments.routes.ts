@@ -20,7 +20,7 @@ router.get("/rates/:from/:to", ctrl.getPairRate);
 // GET  /api/payments/history        — past payments
 router.get("/history",       ctrl.getPaymentHistory);
 
-// POST /api/payments/:id/cancel     — cancel pending payment
-router.post("/:id/cancel",   ctrl.cancelPayment);
+// POST /api/payments/:id/cancel  — cancel a pending/processing payment
+router.post("/:id/cancel", ctrl.cancelPayment);
 
 export default router;

@@ -4,15 +4,14 @@ import * as ctrl from "../controllers/accounts.controller";
 
 const router = Router();
 
-// GET /api/accounts/lookup/:account_number
-// Must be registered BEFORE router.use(authenticate) and BEFORE /:id
-router.get("/lookup/:account_number", authenticate, ctrl.lookupAccount);
-
-// GET /api/accounts/resolve?account_number=&bank_code=
-// Resolves external bank account name via Paystack
-router.get("/resolve", authenticate, ctrl.resolveExternalAccount);
-
+// All routes require authentication
 router.use(authenticate);
+
+// GET /api/accounts/lookup/:account_number
+router.get("/lookup/:account_number", ctrl.lookupAccount);
+
+// GET /api/accounts/resolve?account_number=&bank_code=&country=
+router.get("/resolve", ctrl.resolveExternalAccount);
 
 // GET  /api/accounts          — list user's accounts
 router.get("/",          ctrl.listAccounts);
