@@ -137,11 +137,9 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
       }
     }
 
-    // 3. Record debit transaction for the sender.
-    //    Bug fix #3: store body.amount in from_currency (what the user typed),
-    //    NOT totalDebit which is already converted to the account's currency.
-    //    The fee is stored separately so the receipt can display it correctly.
-    const txStatus = recipientAccount ? "completed" : "processing";
+    // External transfers show as "pending" (settlement in progress),
+    // internal as "completed". Both values satisfy the DB status check constraint.
+    const txStatus = recipientAccount ? "completed" : "pending";
     const { data: tx, error: txErr } = await supabase
       .from("transactions")
       .insert({
@@ -243,7 +241,7 @@ export async function cancelPayment(req: AuthRequest, res: Response, next: NextF
       .update({ status: "cancelled" })
       .eq("id", req.params.id)
       .eq("user_id", req.user!.id)
-      .in("status", ["pending", "processing"])
+      .in("status", ["pending"])
       .select()
       .single();
 
