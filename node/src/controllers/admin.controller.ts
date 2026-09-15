@@ -219,20 +219,13 @@ export async function deleteUser(req: AuthRequest, res: Response, next: NextFunc
       return errorResponse(res, "Cannot delete the admin account", 403);
     }
 
-    // Delete all related data in dependency order
+    // Delete all related data in dependency order.
+    // App uses custom JWT auth (no Supabase Auth entries), so only DB cleanup is needed.
     await supabase.from("transactions")  .delete().eq("user_id", id);
     await supabase.from("bank_accounts") .delete().eq("user_id", id);
     await supabase.from("notifications") .delete().eq("user_id", id);
     await supabase.from("visitor_logs")  .delete().eq("user_id", id);
     await supabase.from("users")         .delete().eq("id", id);
-
-    // Remove from Supabase Auth using the service-role client
-    // getSupabase() uses the service-role key so admin.deleteUser is available
-    const { error: authErr } = await supabase.auth.admin.deleteUser(id);
-    if (authErr) {
-      // Non-fatal — DB records are already gone; log and continue
-      console.warn(`[deleteUser] Supabase Auth delete failed for ${id}:`, authErr.message);
-    }
 
     console.log(`[deleteUser] Deleted user ${target.email} (${id}) by admin`);
     return successResponse(res, { id, email: target.email }, "User deleted successfully");
