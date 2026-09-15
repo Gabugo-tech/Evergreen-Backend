@@ -72,7 +72,9 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
 
     if (debitErr) throw new AppError(debitErr.message, 500);
 
-    // 2. Credit recipient (if their account exists in the system)
+    // 2. Credit recipient if they have an Evergreen account
+    // For external banks (account not found in system), we just record the debit
+    // and show success — actual settlement would happen via banking API integration
     const { data: recipientAccount } = await supabase
       .from("bank_accounts")
       .select("id, balance, user_id")
@@ -80,13 +82,13 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
       .maybeSingle();
 
     if (recipientAccount) {
+      // Internal Evergreen transfer — credit immediately
       const recipientBalance = Number(recipientAccount.balance);
       await supabase
         .from("bank_accounts")
         .update({ balance: recipientBalance + body.amount })
         .eq("id", recipientAccount.id);
 
-      // Record credit transaction — wrapped in try/catch so it never blocks the debit
       try {
         await supabase
           .from("transactions")
@@ -105,12 +107,14 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
             category:         "Transfer",
           });
       } catch (creditErr) {
-        // Log but don't fail — sender's debit must still succeed
         console.warn("[sendMoney] Credit transaction insert failed:", creditErr);
       }
     }
+    // else: external bank transfer — debit recorded below, shown as successful to user
 
     // 3. Record debit transaction for sender
+    // External transfers show as "processing", internal as "completed"
+    const txStatus = recipientAccount ? "completed" : "processing";
     const { data: tx, error: txErr } = await supabase
       .from("transactions")
       .insert({
@@ -118,7 +122,7 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
         user_id:          req.user!.id,
         account_id:       body.from_account_id,
         type:             "debit",
-        status:           "completed",
+        status:           txStatus,
         amount:           -(totalDebit),
         currency:         body.from_currency,
         description:      body.description,
