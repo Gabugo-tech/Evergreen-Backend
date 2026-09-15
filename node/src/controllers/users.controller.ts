@@ -1,9 +1,23 @@
-import { Response, NextFunction } from "express";
+import { Response, NextFunction, Request } from "express";
+import multer from "multer";
 import { z } from "zod";
 import { getSupabase } from "../services/supabase";
 import { AuthRequest } from "../middleware/auth";
 import { successResponse, errorResponse } from "../utils/response";
 import { AppError } from "../middleware/errorHandler";
+
+// ─── Multer: memory storage, 5 MB limit, images only ─────────────────────────
+export const avatarUpload = multer({
+  storage: multer.memoryStorage(),
+  limits:  { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req: Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
+    if (file.mimetype.startsWith("image/")) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only image files are allowed"));
+    }
+  },
+});
 
 export async function getProfile(req: AuthRequest, res: Response, next: NextFunction) {
   try {
@@ -44,8 +58,42 @@ export async function updateProfile(req: AuthRequest, res: Response, next: NextF
 
 export async function uploadAvatar(req: AuthRequest, res: Response, next: NextFunction) {
   try {
-    // TODO: handle multipart upload, store in Supabase Storage
-    return successResponse(res, { avatar_url: null }, "Avatar upload — coming soon");
+    const file = (req as AuthRequest & { file?: Express.Multer.File }).file;
+    if (!file) return errorResponse(res, "No file uploaded", 400);
+
+    const supabase  = getSupabase();
+    const userId    = req.user!.id;
+    const ext       = file.mimetype.split("/")[1]?.replace("jpeg", "jpg") ?? "jpg";
+    const path      = `avatars/${userId}.${ext}`;
+
+    // Upsert into Supabase Storage bucket "avatars" (create it if it doesn't exist)
+    const { error: uploadErr } = await supabase.storage
+      .from("avatars")
+      .upload(path, file.buffer, {
+        contentType: file.mimetype,
+        upsert:      true,         // overwrite previous avatar
+      });
+
+    if (uploadErr) throw new AppError(uploadErr.message, 500);
+
+    // Get the public URL
+    const { data: urlData } = supabase.storage
+      .from("avatars")
+      .getPublicUrl(path);
+
+    const avatar_url = urlData.publicUrl;
+
+    // Persist to users table
+    const { data, error: updateErr } = await supabase
+      .from("users")
+      .update({ avatar_url, updated_at: new Date().toISOString() })
+      .eq("id", userId)
+      .select("id, email, full_name, avatar_url, account_type, kyc_status")
+      .single();
+
+    if (updateErr) throw new AppError(updateErr.message, 500);
+
+    return successResponse(res, data, "Avatar updated");
   } catch (err) {
     next(err);
   }
