@@ -32,128 +32,137 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
     // Verify account ownership
     const { data: account, error: accErr } = await supabase
       .from("bank_accounts")
-      .select("id, balance, currency")
+      .select("id, balance, available_balance, currency")
       .eq("id", body.from_account_id)
       .eq("user_id", req.user!.id)
       .single();
 
     if (accErr || !account) return errorResponse(res, "Account not found", 404);
 
-    const balanceRaw = account.balance;
-    const balance = typeof balanceRaw === "string"
-      ? parseFloat(balanceRaw)
-      : Number(balanceRaw);
+    const balance          = typeof account.balance === "string" ? parseFloat(account.balance) : Number(account.balance);
+    const availableBalance = typeof account.available_balance === "string" ? parseFloat(account.available_balance) : Number(account.available_balance ?? account.balance);
 
     const fee = body.transfer_type === "international" ? 2.5 : 0;
 
-    // Convert the send amount + fee into the account's native currency before
-    // comparing against the balance. Without this, sending $20 USD from an
-    // NGN account would compare 20 against ₦50,000 — correct numerically but
-    // semantically wrong when currencies differ.
-    const accountCurrency  = (account.currency as string).toUpperCase();
-    const fromCurrencyUC   = body.from_currency.toUpperCase();
-    const accountRate      = FX_RATES[accountCurrency] ?? 1;
-    const fromRate         = FX_RATES[fromCurrencyUC]  ?? 1;
-    // Convert: amount_in_account_currency = amount_in_from_currency * (accountRate / fromRate)
-    const amountInAccountCurrency = body.amount * (accountRate / fromRate);
-    const feeInAccountCurrency    = fee         * (accountRate / fromRate);
+    // Convert the send amount + fee into the account's native currency so
+    // the balance check is always an apples-to-apples comparison.
+    const accountCurrency = (account.currency as string).toUpperCase();
+    const fromCurrencyUC  = body.from_currency.toUpperCase();
+    const accountRate     = FX_RATES[accountCurrency] ?? 1;
+    const fromRate        = FX_RATES[fromCurrencyUC]  ?? 1;
+    const conversionRatio = accountRate / fromRate;
+
+    const amountInAccountCurrency = body.amount * conversionRatio;
+    const feeInAccountCurrency    = fee         * conversionRatio;
     const totalDebit              = amountInAccountCurrency + feeInAccountCurrency;
 
-    // Log for debugging on Railway
     console.log(
       `[sendMoney] balance=${balance} ${accountCurrency} | ` +
       `send=${body.amount} ${fromCurrencyUC} → ${amountInAccountCurrency.toFixed(4)} ${accountCurrency} | ` +
       `fee=${fee} → ${feeInAccountCurrency.toFixed(4)} ${accountCurrency} | ` +
-      `totalDebit=${totalDebit.toFixed(4)} ${accountCurrency}`
+      `totalDebit=${totalDebit.toFixed(4)} | type=${body.transfer_type}`
     );
 
-    // International transfers are allowed regardless of balance (credit/overdraft behaviour).
-    // Only local transfers are blocked when funds are insufficient.
+    // Bug fix #1: only block local transfers for insufficient funds.
+    // International transfers are allowed to proceed regardless of balance.
     if (body.transfer_type === "local" && balance < totalDebit) {
       console.log(`[sendMoney] INSUFFICIENT: balance(${balance}) < totalDebit(${totalDebit.toFixed(4)})`);
       return errorResponse(res, "Insufficient balance", 422);
     }
 
     // Generate collision-proof references using UUID segments
-    const baseRef    = uuidv4().replace(/-/g, "").slice(0, 16).toUpperCase();
-    const reference  = `EG${baseRef}`;
-    const referenceCR = `${reference}CR`; // credit leg — distinct from debit
+    const baseRef     = uuidv4().replace(/-/g, "").slice(0, 16).toUpperCase();
+    const reference   = `EG${baseRef}`;
+    const referenceCR = `${reference}CR`; // credit leg
     const referenceDR = `${reference}DR`; // debit leg
 
-    // 1. Debit sender — subtract in the account's native currency
-    const newBalance = balance - totalDebit;
+    // 1. Debit sender — subtract totalDebit (already in the account's currency)
+    //    and keep available_balance in sync.
+    const newBalance          = balance          - totalDebit;
+    const newAvailableBalance = availableBalance - totalDebit;
     const { error: debitErr } = await supabase
       .from("bank_accounts")
-      .update({ balance: newBalance })
+      .update({ balance: newBalance, available_balance: newAvailableBalance })
       .eq("id", body.from_account_id);
 
     if (debitErr) throw new AppError(debitErr.message, 500);
 
-    // 2. Credit recipient if they have an Evergreen account
-    // For external banks (account not found in system), we just record the debit
-    // and show success — actual settlement would happen via banking API integration
+    // 2. Credit recipient if they have an Evergreen account.
+    //    For external banks the debit is recorded and shown as processing —
+    //    actual settlement would go through a banking API in production.
     const { data: recipientAccount } = await supabase
       .from("bank_accounts")
-      .select("id, balance, user_id")
+      .select("id, balance, available_balance, currency, user_id")
       .eq("account_number", body.to_account_number)
       .maybeSingle();
 
     if (recipientAccount) {
-      // Internal Evergreen transfer — credit immediately
-      const recipientBalance = Number(recipientAccount.balance);
+      // Bug fix #2: convert the credit amount into the recipient account's own
+      // currency — not the sender's from_currency.
+      const recipientCurrency = (recipientAccount.currency as string).toUpperCase();
+      const recipientRate     = FX_RATES[recipientCurrency] ?? 1;
+      // amount (in from_currency) → USD → recipient currency
+      const creditAmount = (body.amount / fromRate) * recipientRate;
+
+      const recipientBalance          = typeof recipientAccount.balance === "string" ? parseFloat(recipientAccount.balance) : Number(recipientAccount.balance);
+      const recipientAvailableBalance = typeof recipientAccount.available_balance === "string" ? parseFloat(recipientAccount.available_balance) : Number(recipientAccount.available_balance ?? recipientAccount.balance);
+
       await supabase
         .from("bank_accounts")
-        .update({ balance: recipientBalance + body.amount })
+        .update({
+          balance:           recipientBalance          + creditAmount,
+          available_balance: recipientAvailableBalance + creditAmount,
+        })
         .eq("id", recipientAccount.id);
 
       try {
         await supabase
           .from("transactions")
           .insert({
-            id:               uuidv4(),
-            user_id:          recipientAccount.user_id,
-            account_id:       recipientAccount.id,
-            type:             "credit",
-            status:           "completed",
-            amount:           body.amount,
-            currency:         body.to_currency,
-            description:      body.description,
-            reference:        referenceCR,
-            recipient_name:   body.recipient_name,
+            id:                uuidv4(),
+            user_id:           recipientAccount.user_id,
+            account_id:        recipientAccount.id,
+            type:              "credit",
+            status:            "completed",
+            amount:            creditAmount,          // stored in recipient's currency
+            currency:          recipientCurrency,
+            description:       body.description,
+            reference:         referenceCR,
+            recipient_name:    body.recipient_name,
             recipient_account: body.to_account_number,
-            category:         "Transfer",
+            category:          "Transfer",
           });
       } catch (creditErr) {
         console.warn("[sendMoney] Credit transaction insert failed:", creditErr);
       }
     }
-    // else: external bank transfer — debit recorded below, shown as successful to user
 
-    // 3. Record debit transaction for sender
-    // External transfers show as "processing", internal as "completed"
+    // 3. Record debit transaction for the sender.
+    //    Bug fix #3: store body.amount in from_currency (what the user typed),
+    //    NOT totalDebit which is already converted to the account's currency.
+    //    The fee is stored separately so the receipt can display it correctly.
     const txStatus = recipientAccount ? "completed" : "processing";
     const { data: tx, error: txErr } = await supabase
       .from("transactions")
       .insert({
-        id:               uuidv4(),
-        user_id:          req.user!.id,
-        account_id:       body.from_account_id,
-        type:             "debit",
-        status:           txStatus,
-        amount:           -(totalDebit),
-        currency:         body.from_currency,
-        description:      body.description,
-        reference:        referenceDR,
-        recipient_name:   body.recipient_name,
+        id:                uuidv4(),
+        user_id:           req.user!.id,
+        account_id:        body.from_account_id,
+        type:              "debit",
+        status:            txStatus,
+        amount:            -(body.amount),   // what the user sent, in from_currency
+        currency:          fromCurrencyUC,
+        description:       body.description,
+        reference:         referenceDR,
+        recipient_name:    body.recipient_name,
         recipient_account: body.to_account_number,
-        category:         "Transfer",
+        category:          "Transfer",
       })
       .select()
       .single();
 
     if (txErr) throw new AppError(txErr.message, 500);
 
-    // Return the base reference (without -DR suffix) for the receipt
     return successResponse(res, { transaction: tx, reference, fee }, "Transfer initiated", 201);
   } catch (err) {
     next(err);
@@ -213,7 +222,7 @@ export async function getPaymentHistory(req: AuthRequest, res: Response, next: N
       .from("transactions")
       .select("*")
       .eq("user_id", req.user!.id)
-      .in("type", ["debit", "transfer"])
+      .in("type", ["debit", "credit", "transfer"])
       .order("created_at", { ascending: false })
       .limit(50);
 
