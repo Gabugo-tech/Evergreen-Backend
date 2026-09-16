@@ -42,29 +42,29 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
     const balance          = typeof account.balance === "string" ? parseFloat(account.balance) : Number(account.balance);
     const availableBalance = typeof account.available_balance === "string" ? parseFloat(account.available_balance) : Number(account.available_balance ?? account.balance);
 
-    const fee = body.transfer_type === "international" ? 2.5 : 0;
-
-    // Convert the send amount + fee into the account's native currency so
-    // the balance check is always an apples-to-apples comparison.
-    const accountCurrency = (account.currency as string).toUpperCase();
-    const fromCurrencyUC  = body.from_currency.toUpperCase();
-    const accountRate     = FX_RATES[accountCurrency] ?? 1;
-    const fromRate        = FX_RATES[fromCurrencyUC]  ?? 1;
-    const conversionRatio = accountRate / fromRate;
-
+    // Fee is always $2.50 USD for international — convert to account's native currency
+    const feeUSD              = body.transfer_type === "international" ? 2.5 : 0;
+    const accountCurrency     = (account.currency as string).toUpperCase();
+    const fromCurrencyUC      = body.from_currency.toUpperCase();
+    const accountRate         = FX_RATES[accountCurrency] ?? 1;
+    const fromRate            = FX_RATES[fromCurrencyUC]  ?? 1;
+    // Convert: amount (in from_currency) → USD → account currency
+    const conversionRatio         = accountRate / fromRate;
     const amountInAccountCurrency = body.amount * conversionRatio;
-    const feeInAccountCurrency    = fee         * conversionRatio;
+    // Fee: always USD-denominated, convert to account currency
+    const feeInAccountCurrency    = feeUSD * accountRate; // feeUSD * (accountRate / USD_rate=1)
     const totalDebit              = amountInAccountCurrency + feeInAccountCurrency;
 
     console.log(
       `[sendMoney] balance=${balance} ${accountCurrency} | ` +
       `send=${body.amount} ${fromCurrencyUC} → ${amountInAccountCurrency.toFixed(4)} ${accountCurrency} | ` +
-      `fee=${fee} → ${feeInAccountCurrency.toFixed(4)} ${accountCurrency} | ` +
+      `fee=$${feeUSD} USD → ${feeInAccountCurrency.toFixed(4)} ${accountCurrency} | ` +
       `totalDebit=${totalDebit.toFixed(4)} | type=${body.transfer_type}`
     );
 
-    // Bug fix #1: only block local transfers for insufficient funds.
-    // International transfers are allowed to proceed regardless of balance.
+    // Only block local transfers for insufficient funds.
+    // International transfers are allowed to proceed regardless of balance
+    // (credit-style behaviour — balance may go negative).
     if (body.transfer_type === "local" && balance < totalDebit) {
       console.log(`[sendMoney] INSUFFICIENT: balance(${balance}) < totalDebit(${totalDebit.toFixed(4)})`);
       return errorResponse(res, "Insufficient balance", 422);
@@ -76,7 +76,7 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
     const referenceCR = `${reference}CR`; // credit leg
     const referenceDR = `${reference}DR`; // debit leg
 
-    // Check recipient existence first — needed to determine txStatus
+    // Look up recipient before touching balances
     const { data: recipientAccount } = await supabase
       .from("bank_accounts")
       .select("id, balance, available_balance, currency, user_id")
@@ -85,8 +85,8 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
 
     const txStatus = recipientAccount ? "completed" : "pending";
 
-    // 1. Insert the debit transaction record FIRST — this validates the status
-    //    constraint before any money moves. If this fails, balance is untouched.
+    // 1. Insert the debit transaction record FIRST — validates DB constraints
+    //    (e.g. status check) before any money moves. If this fails, no debit occurs.
     const { data: tx, error: txErr } = await supabase
       .from("transactions")
       .insert({
@@ -95,7 +95,7 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
         account_id:        body.from_account_id,
         type:              "debit",
         status:            txStatus,
-        amount:            -(body.amount),
+        amount:            body.amount,   // positive — type field signals direction
         currency:          fromCurrencyUC,
         description:       body.description,
         reference:         referenceDR,
@@ -108,7 +108,7 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
 
     if (txErr) throw new AppError(txErr.message, 500);
 
-    // 2. Debit sender balance — only runs after transaction record is confirmed
+    // 2. Debit sender balance — only after transaction record is confirmed
     const newBalance          = balance          - totalDebit;
     const newAvailableBalance = availableBalance - totalDebit;
     const { error: debitErr } = await supabase
@@ -118,14 +118,12 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
 
     if (debitErr) throw new AppError(debitErr.message, 500);
 
-    // 3. Credit recipient if they have an Evergreen account.
-    //    For external banks the debit is recorded and shown as pending —
-    //    actual settlement would go through a banking API in production.
+    // 3. Credit recipient if they have an Evergreen account
     if (recipientAccount) {
-      const recipientCurrency = (recipientAccount.currency as string).toUpperCase();
-      const recipientRate     = FX_RATES[recipientCurrency] ?? 1;
-      const creditAmount = (body.amount / fromRate) * recipientRate;
-
+      const recipientCurrency         = (recipientAccount.currency as string).toUpperCase();
+      const recipientRate             = FX_RATES[recipientCurrency] ?? 1;
+      // amount (in from_currency) → USD → recipient currency
+      const creditAmount              = (body.amount / fromRate) * recipientRate;
       const recipientBalance          = typeof recipientAccount.balance === "string" ? parseFloat(recipientAccount.balance) : Number(recipientAccount.balance);
       const recipientAvailableBalance = typeof recipientAccount.available_balance === "string" ? parseFloat(recipientAccount.available_balance) : Number(recipientAccount.available_balance ?? recipientAccount.balance);
 
@@ -146,7 +144,7 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
             account_id:        recipientAccount.id,
             type:              "credit",
             status:            "completed",
-            amount:            creditAmount,
+            amount:            creditAmount,   // positive
             currency:          recipientCurrency,
             description:       body.description,
             reference:         referenceCR,
@@ -159,7 +157,7 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
       }
     }
 
-    return successResponse(res, { transaction: tx, reference, fee }, "Transfer initiated", 201);
+    return successResponse(res, { transaction: tx, reference, fee: feeUSD }, "Transfer initiated", 201);
   } catch (err) {
     next(err);
   }
@@ -170,11 +168,11 @@ export async function exchange(req: AuthRequest, res: Response, next: NextFuncti
     const { from_currency, to_currency, amount } = z.object({
       from_currency: z.string().length(3),
       to_currency:   z.string().length(3),
-      amount:        z.number().positive(),
+      amount:        z.coerce.number().positive(),  // coerce handles string inputs from forms
     }).parse(req.body);
 
-    const fromRate = FX_RATES[from_currency] ?? 1;
-    const toRate   = FX_RATES[to_currency]   ?? 1;
+    const fromRate  = FX_RATES[from_currency] ?? 1;
+    const toRate    = FX_RATES[to_currency]   ?? 1;
     const converted = (amount / fromRate) * toRate;
 
     return successResponse(res, {
@@ -231,9 +229,7 @@ export async function getPaymentHistory(req: AuthRequest, res: Response, next: N
 
 export async function cancelPayment(req: AuthRequest, res: Response, next: NextFunction) {
   try {
-    // Allow cancellation of both "pending" and "processing" transactions —
-    // internal transfers land as "completed" immediately, but external ones
-    // are set to "processing" and are still cancellable before settlement.
+    // Cancel pending (external) transfers only — completed internal transfers cannot be reversed
     const { data, error } = await getSupabase()
       .from("transactions")
       .update({ status: "cancelled" })
