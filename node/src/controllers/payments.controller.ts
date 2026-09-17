@@ -10,7 +10,7 @@ import { AppError } from "../middleware/errorHandler";
 const FX_RATES: Record<string, number> = {
   USD:1, EUR:0.92, GBP:0.79, NGN:1620, CAD:1.36, AUD:1.53,
   JPY:157, CHF:0.90, INR:84, CNY:7.27, BRL:5.05, MXN:17.1,
-  ZAR:18.6, SGD:1.34, AED:3.67,
+  ZAR:18.6, SGD:1.34, AED:3.67, THB:35.1, TWD:32.4,
 };
 
 const sendSchema = z.object({
