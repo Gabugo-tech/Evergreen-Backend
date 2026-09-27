@@ -4,6 +4,7 @@ import jwt from "jsonwebtoken";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
 import { getSupabase } from "../services/supabase";
+import { sendPinResetOtp } from "../services/email";
 import { successResponse, errorResponse } from "../utils/response";
 import { AppError } from "../middleware/errorHandler";
 import { AuthRequest } from "../middleware/auth";
@@ -302,8 +303,13 @@ export async function requestPinReset(req: AuthRequest, res: Response, next: Nex
       })
       .eq("id", req.user!.id);
 
-    // TODO: send otp to user.email via email provider
-    console.log(`[requestPinReset] OTP for ${user.email}: ${otp}`);
+    // Send OTP via Gmail
+    try {
+      await sendPinResetOtp(user.email, otp);
+    } catch (emailErr) {
+      console.error("[requestPinReset] Failed to send OTP email:", emailErr);
+      return errorResponse(res, "Failed to send OTP email. Please try again.", 500);
+    }
 
     return successResponse(res, { email: user.email }, "OTP sent to your registered email");
   } catch (err) {
