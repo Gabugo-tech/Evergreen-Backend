@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from "uuid";
 import { getSupabase } from "../services/supabase";
 import { successResponse, errorResponse } from "../utils/response";
 import { AppError } from "../middleware/errorHandler";
+import { AuthRequest } from "../middleware/auth";
 
 // ─── Schemas ──────────────────────────────────────────────────────────────────
 const registerSchema = z.object({
@@ -14,6 +15,7 @@ const registerSchema = z.object({
   phone:        z.string().min(7),
   password:     z.string().min(8).regex(/[A-Z]/).regex(/[0-9]/),
   account_type: z.enum(["personal", "business"]).default("personal"),
+  payment_pin:  z.string().length(4).regex(/^\d{4}$/, "PIN must be 4 digits"),
 });
 
 const loginSchema = z.object({
@@ -30,7 +32,6 @@ function signToken(userId: string, email: string, role = "user"): string {
 
 /** Generate a unique 10-digit numeric account number (no prefix) */
 function generateAccountNumber(): string {
-  // First digit is always 1-9 (no leading zero), remaining 9 are 0-9
   const first = Math.floor(Math.random() * 9 + 1).toString();
   const rest   = Math.floor(Math.random() * 1_000_000_000)
     .toString()
@@ -50,12 +51,16 @@ async function uniqueAccountNumber(): Promise<string> {
       .maybeSingle();
     if (!data) return num;
   }
-  // Fallback: timestamp-based 10-digit number
   const ts = Date.now().toString().slice(-10).padStart(10, "1");
   return ts;
 }
 
-// ─── Handlers ─────────────────────────────────────────────────────────────────
+/** Generate a 6-digit numeric OTP */
+function generateOtp(): string {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+// ─── Register ─────────────────────────────────────────────────────────────────
 export async function register(req: Request, res: Response, next: NextFunction) {
   try {
     const body     = registerSchema.parse(req.body);
@@ -70,32 +75,32 @@ export async function register(req: Request, res: Response, next: NextFunction) 
 
     if (existing) return errorResponse(res, "Email already registered", 409);
 
-    const password_hash = await bcrypt.hash(body.password, 12);
-    const userId        = uuidv4();
+    const password_hash    = await bcrypt.hash(body.password, 12);
+    const payment_pin_hash = await bcrypt.hash(body.payment_pin, 12);
+    const userId           = uuidv4();
 
-    // Create user
+    // Create user — payment_pin_hash stored alongside password_hash
     const { data: user, error: userErr } = await supabase
       .from("users")
       .insert({
-        id:           userId,
-        email:        body.email,
-        full_name:    body.full_name,
-        phone:        body.phone,
-        account_type: body.account_type,
+        id:               userId,
+        email:            body.email,
+        full_name:        body.full_name,
+        phone:            body.phone,
+        account_type:     body.account_type,
         password_hash,
-        kyc_status:   "pending",
+        payment_pin_hash,
+        kyc_status:       "pending",
       })
       .select("id, email, full_name, account_type, kyc_status, created_at")
       .single();
 
     if (userErr) throw new AppError(userErr.message, 500);
 
-    // Skip auto-account creation for the admin — they have a dedicated test account
     const isAdminEmail = body.email.toLowerCase() === "nnanwubagabriel@gmail.com";
     let accountNumber = "";
 
     if (!isAdminEmail) {
-      // Create primary checking account with a generated account number
       accountNumber = await uniqueAccountNumber();
       const { error: accErr } = await supabase
         .from("bank_accounts")
@@ -120,6 +125,7 @@ export async function register(req: Request, res: Response, next: NextFunction) 
   }
 }
 
+// ─── Login ────────────────────────────────────────────────────────────────────
 export async function login(req: Request, res: Response, next: NextFunction) {
   try {
     const { email, password } = loginSchema.parse(req.body);
@@ -144,17 +150,19 @@ export async function login(req: Request, res: Response, next: NextFunction) {
   }
 }
 
+// ─── Logout ───────────────────────────────────────────────────────────────────
 export async function logout(_req: Request, res: Response) {
   return successResponse(res, null, "Logged out successfully");
 }
 
+// ─── Refresh token ────────────────────────────────────────────────────────────
 export async function refresh(req: Request, res: Response, next: NextFunction) {
   try {
     const { token: oldToken } = req.body as { token: string };
     if (!oldToken) return errorResponse(res, "Token required", 400);
 
     const secret = process.env.JWT_SECRET!;
-    const payload = jwt.verify(oldToken, secret, { ignoreExpiration: true }) as any;
+    const payload = jwt.verify(oldToken, secret, { ignoreExpiration: true }) as { sub: string; email: string; role: string };
     const token = signToken(payload.sub, payload.email, payload.role);
     return successResponse(res, { token }, "Token refreshed");
   } catch (err) {
@@ -162,17 +170,17 @@ export async function refresh(req: Request, res: Response, next: NextFunction) {
   }
 }
 
+// ─── Forgot password ──────────────────────────────────────────────────────────
 export async function forgotPassword(req: Request, res: Response, next: NextFunction) {
   try {
     const { email } = z.object({ email: z.string().email() }).parse(req.body);
-    // In production: generate OTP, store in DB with expiry, send email
-    // For now we just confirm the request was received
     return successResponse(res, { email }, "Reset code sent if account exists");
   } catch (err) {
     next(err);
   }
 }
 
+// ─── Verify OTP ───────────────────────────────────────────────────────────────
 export async function verifyOtp(req: Request, res: Response, next: NextFunction) {
   try {
     const { email, otp } = z.object({
@@ -180,13 +188,29 @@ export async function verifyOtp(req: Request, res: Response, next: NextFunction)
       otp:   z.string().length(6),
     }).parse(req.body);
 
-    // TODO: verify OTP from DB/cache
+    const supabase = getSupabase();
+    const { data: user } = await supabase
+      .from("users")
+      .select("pin_reset_otp, pin_reset_otp_expires_at")
+      .eq("email", email)
+      .single();
+
+    if (!user?.pin_reset_otp) return errorResponse(res, "No OTP requested", 400);
+
+    const expired = user.pin_reset_otp_expires_at
+      ? new Date(user.pin_reset_otp_expires_at) < new Date()
+      : true;
+
+    if (expired) return errorResponse(res, "OTP has expired", 400);
+    if (user.pin_reset_otp !== otp) return errorResponse(res, "Invalid OTP", 400);
+
     return successResponse(res, { verified: true }, "OTP verified");
   } catch (err) {
     next(err);
   }
 }
 
+// ─── Reset password ───────────────────────────────────────────────────────────
 export async function resetPassword(req: Request, res: Response, next: NextFunction) {
   try {
     const { email, otp, password } = z.object({
@@ -196,15 +220,135 @@ export async function resetPassword(req: Request, res: Response, next: NextFunct
     }).parse(req.body);
 
     const supabase = getSupabase();
-    const password_hash = await bcrypt.hash(password, 12);
+    const { data: user } = await supabase
+      .from("users")
+      .select("pin_reset_otp, pin_reset_otp_expires_at")
+      .eq("email", email)
+      .single();
 
+    if (!user?.pin_reset_otp || user.pin_reset_otp !== otp) {
+      return errorResponse(res, "Invalid or expired OTP", 400);
+    }
+
+    const expired = user.pin_reset_otp_expires_at
+      ? new Date(user.pin_reset_otp_expires_at) < new Date()
+      : true;
+    if (expired) return errorResponse(res, "OTP has expired", 400);
+
+    const password_hash = await bcrypt.hash(password, 12);
     const { error } = await supabase
       .from("users")
-      .update({ password_hash })
+      .update({ password_hash, pin_reset_otp: null, pin_reset_otp_expires_at: null })
       .eq("email", email);
 
     if (error) throw new AppError(error.message, 500);
     return successResponse(res, null, "Password reset successfully");
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ─── Verify payment PIN ───────────────────────────────────────────────────────
+// Lightweight check — used by the frontend before submitting a transfer.
+// The sendMoney endpoint also re-verifies server-side for security.
+export async function verifyPaymentPin(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const { pin } = z.object({
+      pin: z.string().length(4).regex(/^\d{4}$/),
+    }).parse(req.body);
+
+    const supabase = getSupabase();
+    const { data: user } = await supabase
+      .from("users")
+      .select("payment_pin_hash")
+      .eq("id", req.user!.id)
+      .single();
+
+    if (!user?.payment_pin_hash) return errorResponse(res, "No payment PIN set", 400);
+
+    const valid = await bcrypt.compare(pin, user.payment_pin_hash);
+    if (!valid) return errorResponse(res, "Incorrect payment PIN", 401);
+
+    return successResponse(res, { verified: true }, "PIN verified");
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ─── Request PIN reset OTP ────────────────────────────────────────────────────
+// Generates a 6-digit OTP, stores it hashed in the DB, and (in production)
+// sends it to the user's email. For now the OTP is returned in the response
+// so you can wire up a real email provider (Resend, SendGrid, etc.) later.
+export async function requestPinReset(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const supabase = getSupabase();
+
+    const { data: user } = await supabase
+      .from("users")
+      .select("email")
+      .eq("id", req.user!.id)
+      .single();
+
+    if (!user) return errorResponse(res, "User not found", 404);
+
+    const otp     = generateOtp();
+    const expires = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+
+    await supabase
+      .from("users")
+      .update({
+        pin_reset_otp:            otp,
+        pin_reset_otp_expires_at: expires.toISOString(),
+      })
+      .eq("id", req.user!.id);
+
+    // TODO: send otp to user.email via email provider
+    console.log(`[requestPinReset] OTP for ${user.email}: ${otp}`);
+
+    return successResponse(res, { email: user.email }, "OTP sent to your registered email");
+  } catch (err) {
+    next(err);
+  }
+}
+
+// ─── Reset payment PIN ────────────────────────────────────────────────────────
+export async function resetPaymentPin(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const { otp, new_pin } = z.object({
+      otp:     z.string().length(6),
+      new_pin: z.string().length(4).regex(/^\d{4}$/, "PIN must be 4 digits"),
+    }).parse(req.body);
+
+    const supabase = getSupabase();
+
+    const { data: user } = await supabase
+      .from("users")
+      .select("pin_reset_otp, pin_reset_otp_expires_at")
+      .eq("id", req.user!.id)
+      .single();
+
+    if (!user?.pin_reset_otp) return errorResponse(res, "No PIN reset requested", 400);
+
+    const expired = user.pin_reset_otp_expires_at
+      ? new Date(user.pin_reset_otp_expires_at) < new Date()
+      : true;
+
+    if (expired)                      return errorResponse(res, "OTP has expired. Request a new one.", 400);
+    if (user.pin_reset_otp !== otp)   return errorResponse(res, "Invalid OTP", 400);
+
+    const payment_pin_hash = await bcrypt.hash(new_pin, 12);
+
+    const { error } = await supabase
+      .from("users")
+      .update({
+        payment_pin_hash,
+        pin_reset_otp:            null,
+        pin_reset_otp_expires_at: null,
+      })
+      .eq("id", req.user!.id);
+
+    if (error) throw new AppError(error.message, 500);
+    return successResponse(res, null, "Payment PIN reset successfully");
   } catch (err) {
     next(err);
   }

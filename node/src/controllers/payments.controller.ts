@@ -1,4 +1,5 @@
 import { Response, NextFunction } from "express";
+import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
 import { getSupabase } from "../services/supabase";
@@ -22,6 +23,7 @@ const sendSchema = z.object({
   to_currency:        z.string().length(3),
   description:        z.string().min(1).max(120),
   transfer_type:      z.enum(["local", "international"]),
+  payment_pin:        z.string().length(4).regex(/^\d{4}$/, "PIN must be 4 digits"),
 });
 
 export async function sendMoney(req: AuthRequest, res: Response, next: NextFunction) {
@@ -38,6 +40,19 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
       .single();
 
     if (accErr || !account) return errorResponse(res, "Account not found", 404);
+
+    // Verify payment PIN before touching any balances
+    const { data: userPinData } = await supabase
+      .from("users")
+      .select("payment_pin_hash")
+      .eq("id", req.user!.id)
+      .single();
+
+    if (!userPinData?.payment_pin_hash) {
+      return errorResponse(res, "No payment PIN set. Please set a PIN in your settings.", 400);
+    }
+    const pinValid = await bcrypt.compare(body.payment_pin, userPinData.payment_pin_hash);
+    if (!pinValid) return errorResponse(res, "Incorrect payment PIN", 401);
 
     const balance          = typeof account.balance === "string" ? parseFloat(account.balance) : Number(account.balance);
     const availableBalance = typeof account.available_balance === "string" ? parseFloat(account.available_balance) : Number(account.available_balance ?? account.balance);

@@ -1,27 +1,26 @@
 import { Router } from "express";
+import { authenticate } from "../middleware/auth";
 import * as ctrl from "../controllers/auth.controller";
 
 const router = Router();
 
-// POST /api/auth/register
-router.post("/register", ctrl.register);
-
-// POST /api/auth/login
-router.post("/login", ctrl.login);
-
-// POST /api/auth/logout
-router.post("/logout", ctrl.logout);
-
-// POST /api/auth/refresh
-router.post("/refresh", ctrl.refresh);
-
-// POST /api/auth/forgot-password
-router.post("/forgot-password", ctrl.forgotPassword);
-
-// POST /api/auth/reset-password
+// ── Public routes ─────────────────────────────────────────────────────────────
+router.post("/register",       ctrl.register);
+router.post("/login",          ctrl.login);
+router.post("/logout",         ctrl.logout);
+router.post("/refresh",        ctrl.refresh);
+router.post("/forgot-password",ctrl.forgotPassword);
+router.post("/verify-otp",     ctrl.verifyOtp);
 router.post("/reset-password", ctrl.resetPassword);
 
-// POST /api/auth/verify-otp
-router.post("/verify-otp", ctrl.verifyOtp);
+// ── Authenticated routes ──────────────────────────────────────────────────────
+// POST /api/auth/verify-pin       — verify payment PIN before a transfer
+router.post("/verify-pin",         authenticate, ctrl.verifyPaymentPin);
+
+// POST /api/auth/request-pin-reset — send OTP to email for PIN reset
+router.post("/request-pin-reset",  authenticate, ctrl.requestPinReset);
+
+// POST /api/auth/reset-pin         — submit OTP + new PIN to complete reset
+router.post("/reset-pin",          authenticate, ctrl.resetPaymentPin);
 
 export default router;
