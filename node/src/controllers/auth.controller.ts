@@ -249,7 +249,38 @@ export async function resetPassword(req: Request, res: Response, next: NextFunct
   }
 }
 
-// ─── Verify payment PIN ───────────────────────────────────────────────────────
+// ─── Set payment PIN (for existing users who registered before PIN feature) ───
+export async function setPaymentPin(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const { pin } = z.object({
+      pin: z.string().length(4).regex(/^\d{4}$/, "PIN must be 4 digits"),
+    }).parse(req.body);
+
+    const supabase = getSupabase();
+
+    // Check if PIN is already set
+    const { data: user } = await supabase
+      .from("users")
+      .select("payment_pin_hash")
+      .eq("id", req.user!.id)
+      .single();
+
+    if (user?.payment_pin_hash) {
+      return errorResponse(res, "Payment PIN already set. Use reset to change it.", 400);
+    }
+
+    const payment_pin_hash = await bcrypt.hash(pin, 12);
+    const { error } = await supabase
+      .from("users")
+      .update({ payment_pin_hash })
+      .eq("id", req.user!.id);
+
+    if (error) throw new AppError(error.message, 500);
+    return successResponse(res, null, "Payment PIN set successfully");
+  } catch (err) {
+    next(err);
+  }
+}
 // Lightweight check — used by the frontend before submitting a transfer.
 // The sendMoney endpoint also re-verifies server-side for security.
 export async function verifyPaymentPin(req: AuthRequest, res: Response, next: NextFunction) {
