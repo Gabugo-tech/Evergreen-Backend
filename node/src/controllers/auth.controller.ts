@@ -307,7 +307,36 @@ export async function verifyPaymentPin(req: AuthRequest, res: Response, next: Ne
   }
 }
 
-// ─── Request PIN reset OTP ────────────────────────────────────────────────────
+// ─── Verify PIN reset OTP (authenticated — uses stored OTP, no email needed) ──
+export async function verifyPinResetOtp(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const { otp } = z.object({
+      otp: z.string().length(6),
+    }).parse(req.body);
+
+    const supabase = getSupabase();
+    const { data: user } = await supabase
+      .from("users")
+      .select("pin_reset_otp, pin_reset_otp_expires_at")
+      .eq("id", req.user!.id)
+      .single();
+
+    if (!user?.pin_reset_otp) return errorResponse(res, "No OTP requested", 400);
+
+    const expired = user.pin_reset_otp_expires_at
+      ? new Date(user.pin_reset_otp_expires_at) < new Date()
+      : true;
+
+    if (expired) return errorResponse(res, "OTP has expired", 400);
+    if (user.pin_reset_otp !== otp) return errorResponse(res, "Invalid OTP", 400);
+
+    return successResponse(res, { verified: true }, "OTP verified");
+  } catch (err) {
+    next(err);
+  }
+}
+
+
 // Generates a 6-digit OTP, stores it hashed in the DB, and (in production)
 // sends it to the user's email. For now the OTP is returned in the response
 // so you can wire up a real email provider (Resend, SendGrid, etc.) later.

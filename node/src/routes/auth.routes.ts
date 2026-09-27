@@ -21,9 +21,12 @@ router.post("/set-pin",            authenticate, ctrl.setPaymentPin);
 router.post("/verify-pin",         authenticate, ctrl.verifyPaymentPin);
 
 // POST /api/auth/request-pin-reset — send OTP to email for PIN reset
-router.post("/request-pin-reset",  authenticate, ctrl.requestPinReset);
+router.post("/request-pin-reset",    authenticate, ctrl.requestPinReset);
+
+// POST /api/auth/verify-pin-reset-otp — verify OTP for PIN reset (authenticated)
+router.post("/verify-pin-reset-otp", authenticate, ctrl.verifyPinResetOtp);
 
 // POST /api/auth/reset-pin         — submit OTP + new PIN to complete reset
-router.post("/reset-pin",          authenticate, ctrl.resetPaymentPin);
+router.post("/reset-pin",            authenticate, ctrl.resetPaymentPin);
 
 export default router;
