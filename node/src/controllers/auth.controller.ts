@@ -4,7 +4,7 @@ import jwt from "jsonwebtoken";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
 import { getSupabase } from "../services/supabase";
-import { sendPinResetOtp } from "../services/email";
+import { sendPinResetOtp, sendPasswordResetOtp } from "../services/email";
 import { successResponse, errorResponse } from "../utils/response";
 import { AppError } from "../middleware/errorHandler";
 import { AuthRequest } from "../middleware/auth";
@@ -196,9 +196,9 @@ export async function forgotPassword(req: Request, res: Response, next: NextFunc
         })
         .eq("id", user.id);
 
-      // Send OTP via Gmail
+      // Send OTP via Gmail (password reset template)
       try {
-        await sendPinResetOtp(user.email, otp);
+        await sendPasswordResetOtp(user.email, otp);
       } catch (emailErr) {
         console.error("[forgotPassword] Failed to send OTP email:", emailErr);
         // Don't reveal the failure — return generic success to avoid enumeration

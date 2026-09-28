@@ -1,5 +1,10 @@
 import nodemailer from "nodemailer";
 
+// ─── Validate env vars at startup ────────────────────────────────────────────
+if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) {
+  console.warn("[email] GMAIL_USER or GMAIL_APP_PASSWORD not set — emails will fail");
+}
+
 // ─── Transporter (Gmail + App Password) ──────────────────────────────────────
 const transporter = nodemailer.createTransport({
   service: "gmail",
@@ -9,9 +14,9 @@ const transporter = nodemailer.createTransport({
   },
 });
 
-// ─── Send PIN Reset OTP ───────────────────────────────────────────────────────
-export async function sendPinResetOtp(toEmail: string, otp: string): Promise<void> {
-  const html = `
+// ─── Shared HTML wrapper ──────────────────────────────────────────────────────
+function buildEmail(title: string, subtitle: string, bodyHtml: string): string {
+  return `
     <!DOCTYPE html>
     <html>
     <head>
@@ -21,10 +26,10 @@ export async function sendPinResetOtp(toEmail: string, otp: string): Promise<voi
         .container { max-width: 480px; margin: 40px auto; background: #1e293b; border-radius: 16px; overflow: hidden; border: 1px solid #334155; }
         .header { background: linear-gradient(135deg, #2563eb, #1d4ed8); padding: 32px 40px; text-align: center; }
         .header h1 { color: #fff; font-size: 24px; margin: 0; font-weight: 700; }
-        .header p { color: rgba(255,255,255,0.7); margin: 6px 0 0; font-size: 14px; }
-        .body { padding: 36px 40px; }
+        .header p  { color: rgba(255,255,255,0.7); margin: 6px 0 0; font-size: 14px; }
+        .body  { padding: 36px 40px; }
         .otp-box { background: #0f172a; border: 2px solid #2563eb; border-radius: 12px; padding: 24px; text-align: center; margin: 24px 0; }
-        .otp { font-size: 40px; font-weight: 800; letter-spacing: 12px; color: #60a5fa; font-family: monospace; }
+        .otp  { font-size: 40px; font-weight: 800; letter-spacing: 12px; color: #60a5fa; font-family: monospace; }
         .note { font-size: 13px; color: #94a3b8; margin-top: 8px; }
         .warning { background: #451a03; border: 1px solid #92400e; border-radius: 8px; padding: 12px 16px; font-size: 13px; color: #fbbf24; margin-top: 20px; }
         .footer { padding: 20px 40px; border-top: 1px solid #334155; font-size: 12px; color: #475569; text-align: center; }
@@ -33,35 +38,61 @@ export async function sendPinResetOtp(toEmail: string, otp: string): Promise<voi
     <body>
       <div class="container">
         <div class="header">
-          <h1>🔐 Evergreen</h1>
-          <p>Payment PIN Reset</p>
+          <h1>🌿 Evergreen</h1>
+          <p>${subtitle}</p>
         </div>
         <div class="body">
-          <p>You requested to reset your payment PIN. Use the code below to complete the process:</p>
-          <div class="otp-box">
-            <div class="otp">${otp}</div>
-            <div class="note">Expires in 15 minutes</div>
-          </div>
-          <div class="warning">
-            ⚠️ Never share this code with anyone. Evergreen staff will never ask for your OTP.
-          </div>
+          ${bodyHtml}
+          <div class="warning">⚠️ Never share this code with anyone. Evergreen staff will never ask for your OTP.</div>
           <p style="margin-top: 24px; font-size: 13px; color: #94a3b8;">
-            If you did not request a PIN reset, please ignore this email or contact support immediately.
+            If you did not request this, please ignore this email or contact support immediately.
           </p>
         </div>
-        <div class="footer">
-          © 2026 Evergreen Financial Limited · All rights reserved
-        </div>
+        <div class="footer">© 2026 Evergreen Financial Limited · All rights reserved</div>
       </div>
     </body>
     </html>
   `;
+}
 
+function otpBody(message: string, otp: string): string {
+  return `
+    <p>${message}</p>
+    <div class="otp-box">
+      <div class="otp">${otp}</div>
+      <div class="note">Expires in 15 minutes</div>
+    </div>
+  `;
+}
+
+// ─── Password reset OTP ───────────────────────────────────────────────────────
+export async function sendPasswordResetOtp(toEmail: string, otp: string): Promise<void> {
+  const html = buildEmail(
+    "Password Reset",
+    "Reset your password",
+    otpBody("You requested to reset your Evergreen account password. Use the code below:", otp)
+  );
   await transporter.sendMail({
-    from: `"Evergreen Bank" <${process.env.GMAIL_USER}>`,
-    to:   toEmail,
+    from:    `"Evergreen Bank" <${process.env.GMAIL_USER}>`,
+    to:      toEmail,
+    subject: "Your Evergreen Password Reset Code",
+    html,
+    text: `Your Evergreen password reset code is: ${otp}\n\nThis code expires in 15 minutes.`,
+  });
+}
+
+// ─── Payment PIN reset OTP ────────────────────────────────────────────────────
+export async function sendPinResetOtp(toEmail: string, otp: string): Promise<void> {
+  const html = buildEmail(
+    "Payment PIN Reset",
+    "Reset your payment PIN",
+    otpBody("You requested to reset your Evergreen payment PIN. Use the code below:", otp)
+  );
+  await transporter.sendMail({
+    from:    `"Evergreen Bank" <${process.env.GMAIL_USER}>`,
+    to:      toEmail,
     subject: "Your Evergreen Payment PIN Reset Code",
     html,
-    text: `Your Evergreen payment PIN reset code is: ${otp}\n\nThis code expires in 15 minutes.\n\nIf you did not request this, please ignore this email.`,
+    text: `Your Evergreen payment PIN reset code is: ${otp}\n\nThis code expires in 15 minutes.`,
   });
 }
