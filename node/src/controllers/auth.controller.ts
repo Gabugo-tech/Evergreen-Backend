@@ -175,7 +175,37 @@ export async function refresh(req: Request, res: Response, next: NextFunction) {
 export async function forgotPassword(req: Request, res: Response, next: NextFunction) {
   try {
     const { email } = z.object({ email: z.string().email() }).parse(req.body);
-    return successResponse(res, { email }, "Reset code sent if account exists");
+    const supabase  = getSupabase();
+
+    // Silently succeed even if the email doesn't exist (security: no enumeration)
+    const { data: user } = await supabase
+      .from("users")
+      .select("id, email")
+      .eq("email", email)
+      .maybeSingle();
+
+    if (user) {
+      const otp     = generateOtp();
+      const expires = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+
+      await supabase
+        .from("users")
+        .update({
+          pin_reset_otp:            otp,
+          pin_reset_otp_expires_at: expires.toISOString(),
+        })
+        .eq("id", user.id);
+
+      // Send OTP via Gmail
+      try {
+        await sendPinResetOtp(user.email, otp);
+      } catch (emailErr) {
+        console.error("[forgotPassword] Failed to send OTP email:", emailErr);
+        // Don't reveal the failure — return generic success to avoid enumeration
+      }
+    }
+
+    return successResponse(res, null, "Reset code sent if account exists");
   } catch (err) {
     next(err);
   }

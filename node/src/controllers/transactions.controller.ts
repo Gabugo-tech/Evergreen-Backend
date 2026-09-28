@@ -65,16 +65,27 @@ export async function getTransaction(req: AuthRequest, res: Response, next: Next
 
 export async function getSummary(req: AuthRequest, res: Response, next: NextFunction) {
   try {
+    // Limit to current month by default to avoid loading all-time data into memory.
+    // Callers can pass ?from=&to= to override the window.
+    const now       = new Date();
+    const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+    const { from = firstOfMonth, to = now.toISOString() } =
+      req.query as { from?: string; to?: string };
+
     const { data, error } = await getSupabase()
       .from("transactions")
       .select("type, amount, currency, category, created_at")
       .eq("user_id", req.user!.id)
-      .eq("status", "completed");
+      .eq("status", "completed")
+      .gte("created_at", from)
+      .lte("created_at", to)
+      .limit(1000); // safety cap — aggregate queries should stay bounded
 
     if (error) throw new AppError(error.message, 500);
 
-    const totalIn  = data?.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0) ?? 0;
-    const totalOut = data?.filter(t => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0) ?? 0;
+    // Use type field for direction — amount is always stored as a positive number
+    const totalIn  = data?.filter(t => t.type === "credit") .reduce((s, t) => s + Number(t.amount), 0) ?? 0;
+    const totalOut = data?.filter(t => t.type === "debit")  .reduce((s, t) => s + Number(t.amount), 0) ?? 0;
 
     return successResponse(res, { totalIn, totalOut, net: totalIn - totalOut, count: data?.length ?? 0 });
   } catch (err) {
