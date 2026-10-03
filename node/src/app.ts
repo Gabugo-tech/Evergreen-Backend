@@ -17,7 +17,9 @@ import { logger }         from "./utils/logger";
 
 const app: Application = express();
 
-// ─── Security & utilities ─────────────────────────────────────────────────────
+// ─── Trust Railway's reverse proxy ───────────────────────────────────────────
+// Required so express-rate-limit can read the real client IP from X-Forwarded-For
+app.set("trust proxy", 1);
 app.use(helmet());
 app.use(compression());
 app.use(cors({
@@ -46,16 +48,18 @@ app.use(cors({
 
 // ─── Rate limiting ────────────────────────────────────────────────────────────
 const globalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,  // 15 min
+  windowMs: 15 * 60 * 1000,
   max: 300,
   standardHeaders: true,
   legacyHeaders: false,
+  validate: { xForwardedForHeader: false }, // suppress Railway proxy warning
   message: { error: "Too many requests. Please try again later." },
 });
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
+  validate: { xForwardedForHeader: false },
   message: { error: "Too many auth attempts. Please try again in 15 minutes." },
 });
 
