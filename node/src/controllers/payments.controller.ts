@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
 import { getSupabase } from "../services/supabase";
+import { sendCreditAlert } from "../services/email";
 import { AuthRequest } from "../middleware/auth";
 import { successResponse, errorResponse } from "../utils/response";
 import { AppError } from "../middleware/errorHandler";
@@ -24,6 +25,7 @@ const sendSchema = z.object({
   description:        z.string().min(1).max(120),
   transfer_type:      z.enum(["local", "international"]),
   payment_pin:        z.string().length(4).regex(/^\d{4}$/, "PIN must be 4 digits"),
+  recipient_email:    z.string().email().optional().or(z.literal("")), // optional credit alert email
 });
 
 export async function sendMoney(req: AuthRequest, res: Response, next: NextFunction) {
@@ -170,6 +172,35 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
       } catch (creditErr) {
         console.warn("[sendMoney] Credit transaction insert failed:", creditErr);
       }
+    }
+
+    // 4. Send credit alert email if recipient email was provided
+    //    Runs after the response is built — never blocks or fails the transfer.
+    const recipientEmail = body.recipient_email?.trim();
+    if (recipientEmail) {
+      const toAmount = recipientAccount
+        ? (body.amount / fromRate) * (FX_RATES[(recipientAccount.currency as string).toUpperCase()] ?? 1)
+        : (body.amount / fromRate) * (FX_RATES[body.to_currency.toUpperCase()] ?? 1);
+
+      // Look up sender's name
+      const { data: senderUser } = await supabase
+        .from("users")
+        .select("full_name")
+        .eq("id", req.user!.id)
+        .single();
+
+      sendCreditAlert({
+        toEmail:      recipientEmail,
+        senderName:   senderUser?.full_name ?? "Evergreen User",
+        amount:       body.amount,
+        fromCurrency: fromCurrencyUC,
+        toCurrency:   body.to_currency.toUpperCase(),
+        toAmount:     +toAmount.toFixed(2),
+        reference,
+        description:  body.description,
+        transferType: body.transfer_type,
+        date:         new Date().toISOString(),
+      }).catch(err => console.warn("[sendMoney] Credit alert email failed:", err));
     }
 
     return successResponse(res, { transaction: tx, reference, fee: feeUSD }, "Transfer initiated", 201);
