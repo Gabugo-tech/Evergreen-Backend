@@ -33,8 +33,8 @@ app.use(cors({
       "https://evergreen-frontend-lac.vercel.app",
       "https://evergreen-world-bank.vercel.app",
     ];
-    // Scope the CORS wildcard to this specific Vercel project slug only
-    if (allowed.includes(origin) || /https:\/\/evergreen(-[a-z0-9]+)?(-lac)?\.vercel\.app$/.test(origin)) {
+    // Scope the CORS wildcard to Evergreen Vercel deployments only
+    if (allowed.includes(origin) || /https:\/\/evergreen[-a-z0-9]*\.vercel\.app$/.test(origin)) {
       return callback(null, true);
     }
     return callback(new Error(`CORS: origin ${origin} not allowed`));
