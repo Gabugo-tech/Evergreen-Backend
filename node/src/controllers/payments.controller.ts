@@ -200,6 +200,13 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
         description:  body.description,
         transferType: body.transfer_type,
         date:         new Date().toISOString(),
+        // Include new balance only for internal Evergreen recipients
+        recipientNewBalance: recipientAccount
+          ? +(((typeof recipientAccount.balance === "string" ? parseFloat(recipientAccount.balance) : Number(recipientAccount.balance)) + (body.amount / fromRate) * (FX_RATES[(recipientAccount.currency as string).toUpperCase()] ?? 1))).toFixed(2)
+          : undefined,
+        recipientCurrency: recipientAccount
+          ? (recipientAccount.currency as string).toUpperCase()
+          : undefined,
       }).catch(err => console.warn("[sendMoney] Credit alert email failed:", err));
     }
 

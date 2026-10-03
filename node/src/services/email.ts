@@ -61,13 +61,18 @@ export async function sendCreditAlert(params: {
   toEmail: string; senderName: string; amount: number; fromCurrency: string;
   toCurrency: string; toAmount: number; reference: string; description: string;
   transferType: "local" | "international"; date: string;
+  recipientNewBalance?: number; recipientCurrency?: string;
 }): Promise<void> {
-  const { toEmail, senderName, amount, fromCurrency, toCurrency, toAmount, reference, description, transferType, date } = params;
+  const { toEmail, senderName, amount, fromCurrency, toCurrency, toAmount, reference, description, transferType, date, recipientNewBalance, recipientCurrency } = params;
   const isIntl     = transferType === "international";
   const amountStr  = `${amount.toLocaleString(undefined, { minimumFractionDigits: 2 })} ${fromCurrency}`;
   const receiveStr = isIntl && toCurrency !== fromCurrency
     ? `${toAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })} ${toCurrency}`
     : amountStr;
+
+  const balanceRow = (recipientNewBalance !== undefined && recipientCurrency)
+    ? `<tr><td style="color:#94a3b8">Your New Balance</td><td style="text-align:right;font-weight:700;color:#4ade80;font-size:16px">${recipientNewBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })} ${recipientCurrency}</td></tr>`
+    : "";
 
   const htmlContent = `<!DOCTYPE html><html><head><meta charset="utf-8"/><style>
     body{font-family:sans-serif;background:#0f172a;color:#e2e8f0;margin:0;padding:0}
@@ -90,6 +95,7 @@ export async function sendCreditAlert(params: {
         <tr><td style="color:#94a3b8">Reference</td><td style="text-align:right;font-family:monospace">${reference}</td></tr>
         <tr><td style="color:#94a3b8">Description</td><td style="text-align:right">${description}</td></tr>
         <tr><td style="color:#94a3b8">Date</td><td style="text-align:right">${new Date(date).toLocaleString()}</td></tr>
+        ${balanceRow}
       </table>
       ${isIntl
         ? `<div style="margin-top:20px;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:14px;font-size:13px;color:#94a3b8">⏳ <strong style="color:#e2e8f0">International Transfer:</strong> Funds typically arrive within 1–3 business days.</div>`
