@@ -1,26 +1,33 @@
-import nodemailer from "nodemailer";
+import * as Brevo from "@getbrevo/brevo";
 
 // ─── Validate env vars at startup ────────────────────────────────────────────
-if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) {
-  console.warn("[email] GMAIL_USER or GMAIL_APP_PASSWORD not set — emails will fail");
+if (!process.env.BREVO_API_KEY) {
+  console.warn("[email] BREVO_API_KEY not set — emails will fail");
 }
 
-// ─── Transporter (Gmail + App Password) ──────────────────────────────────────
-const transporter = nodemailer.createTransport({
-  host:   "smtp.gmail.com",
-  port:   587,          // Railway allows 587 (STARTTLS); port 465 is blocked
-  secure: false,        // false = STARTTLS, true = SSL (465)
-  auth: {
-    user: process.env.GMAIL_USER,
-    pass: process.env.GMAIL_APP_PASSWORD,
-  },
-  tls: {
-    rejectUnauthorized: false,
-  },
-});
+// ─── Brevo API client ─────────────────────────────────────────────────────────
+const apiInstance = new Brevo.TransactionalEmailsApi();
+apiInstance.setApiKey(
+  Brevo.TransactionalEmailsApiApiKeys.apiKey,
+  process.env.BREVO_API_KEY ?? ""
+);
+
+const FROM_EMAIL = process.env.BREVO_FROM_EMAIL ?? process.env.GMAIL_USER ?? "noreply@evergreen.com";
+const FROM_NAME  = "Evergreen Bank";
+
+// ─── Helper: send via Brevo HTTP API ─────────────────────────────────────────
+async function send(to: string, subject: string, html: string, text: string): Promise<void> {
+  const email = new Brevo.SendSmtpEmail();
+  email.sender  = { name: FROM_NAME, email: FROM_EMAIL };
+  email.to      = [{ email: to }];
+  email.subject = subject;
+  email.htmlContent = html;
+  email.textContent = text;
+  await apiInstance.sendTransacEmail(email);
+}
 
 // ─── Shared HTML wrapper ──────────────────────────────────────────────────────
-function buildEmail(title: string, subtitle: string, bodyHtml: string): string {
+function buildEmail(subtitle: string, bodyHtml: string): string {
   return `
     <!DOCTYPE html>
     <html>
@@ -28,7 +35,7 @@ function buildEmail(title: string, subtitle: string, bodyHtml: string): string {
       <meta charset="utf-8" />
       <style>
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; margin: 0; padding: 0; }
-        .container { max-width: 480px; margin: 40px auto; background: #1e293b; border-radius: 16px; overflow: hidden; border: 1px solid #334155; }
+        .container { max-width: 520px; margin: 40px auto; background: #1e293b; border-radius: 16px; overflow: hidden; border: 1px solid #334155; }
         .header { background: linear-gradient(135deg, #2563eb, #1d4ed8); padding: 32px 40px; text-align: center; }
         .header h1 { color: #fff; font-size: 24px; margin: 0; font-weight: 700; }
         .header p  { color: rgba(255,255,255,0.7); margin: 6px 0 0; font-size: 14px; }
@@ -46,13 +53,7 @@ function buildEmail(title: string, subtitle: string, bodyHtml: string): string {
           <h1>🌿 Evergreen</h1>
           <p>${subtitle}</p>
         </div>
-        <div class="body">
-          ${bodyHtml}
-          <div class="warning">⚠️ Never share this code with anyone. Evergreen staff will never ask for your OTP.</div>
-          <p style="margin-top: 24px; font-size: 13px; color: #94a3b8;">
-            If you did not request this, please ignore this email or contact support immediately.
-          </p>
-        </div>
+        <div class="body">${bodyHtml}</div>
         <div class="footer">© 2026 Evergreen Financial Limited · All rights reserved</div>
       </div>
     </body>
@@ -67,39 +68,33 @@ function otpBody(message: string, otp: string): string {
       <div class="otp">${otp}</div>
       <div class="note">Expires in 15 minutes</div>
     </div>
+    <div class="warning">⚠️ Never share this code with anyone. Evergreen staff will never ask for your OTP.</div>
+    <p style="margin-top: 24px; font-size: 13px; color: #94a3b8;">
+      If you did not request this, please ignore this email or contact support immediately.
+    </p>
   `;
 }
 
 // ─── Password reset OTP ───────────────────────────────────────────────────────
 export async function sendPasswordResetOtp(toEmail: string, otp: string): Promise<void> {
-  const html = buildEmail(
-    "Password Reset",
-    "Reset your password",
-    otpBody("You requested to reset your Evergreen account password. Use the code below:", otp)
-  );
-  await transporter.sendMail({
-    from:    `"Evergreen Bank" <${process.env.GMAIL_USER}>`,
-    to:      toEmail,
-    subject: "Your Evergreen Password Reset Code",
+  const html = buildEmail("Reset your password", otpBody("You requested to reset your Evergreen account password. Use the code below:", otp));
+  await send(
+    toEmail,
+    "Your Evergreen Password Reset Code",
     html,
-    text: `Your Evergreen password reset code is: ${otp}\n\nThis code expires in 15 minutes.`,
-  });
+    `Your Evergreen password reset code is: ${otp}\n\nThis code expires in 15 minutes.`
+  );
 }
 
 // ─── Payment PIN reset OTP ────────────────────────────────────────────────────
 export async function sendPinResetOtp(toEmail: string, otp: string): Promise<void> {
-  const html = buildEmail(
-    "Payment PIN Reset",
-    "Reset your payment PIN",
-    otpBody("You requested to reset your Evergreen payment PIN. Use the code below:", otp)
-  );
-  await transporter.sendMail({
-    from:    `"Evergreen Bank" <${process.env.GMAIL_USER}>`,
-    to:      toEmail,
-    subject: "Your Evergreen Payment PIN Reset Code",
+  const html = buildEmail("Reset your payment PIN", otpBody("You requested to reset your Evergreen payment PIN. Use the code below:", otp));
+  await send(
+    toEmail,
+    "Your Evergreen Payment PIN Reset Code",
     html,
-    text: `Your Evergreen payment PIN reset code is: ${otp}\n\nThis code expires in 15 minutes.`,
-  });
+    `Your Evergreen payment PIN reset code is: ${otp}\n\nThis code expires in 15 minutes.`
+  );
 }
 
 // ─── Credit alert (sent to recipient) ────────────────────────────────────────
@@ -115,20 +110,16 @@ export async function sendCreditAlert(params: {
   transferType:  "local" | "international";
   date:          string;
 }): Promise<void> {
-  const {
-    toEmail, senderName, amount, fromCurrency,
-    toCurrency, toAmount, reference, description, transferType, date,
-  } = params;
+  const { toEmail, senderName, amount, fromCurrency, toCurrency, toAmount, reference, description, transferType, date } = params;
 
-  const isIntl    = transferType === "international";
-  const amountStr = `${amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${fromCurrency}`;
+  const isIntl     = transferType === "international";
+  const amountStr  = `${amount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${fromCurrency}`;
   const receiveStr = isIntl && toCurrency !== fromCurrency
     ? `${toAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${toCurrency}`
     : amountStr;
 
   const bodyHtml = `
     <p style="margin:0 0 20px;">You have received a transfer from <strong>${senderName}</strong> via Evergreen Bank.</p>
-
     <table style="width:100%;border-collapse:collapse;font-size:14px;">
       <tr style="border-bottom:1px solid #334155;">
         <td style="padding:10px 0;color:#94a3b8;">Amount Sent</td>
@@ -155,14 +146,10 @@ export async function sendCreditAlert(params: {
         <td style="padding:10px 0;text-align:right;color:#e2e8f0;">${new Date(date).toLocaleString()}</td>
       </tr>
     </table>
-
-    ${isIntl ? `
-    <div style="margin-top:20px;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:14px;font-size:13px;color:#94a3b8;">
-      ⏳ <strong style="color:#e2e8f0;">International Transfer:</strong> Funds typically arrive within 1–3 business days depending on your bank's processing time.
-    </div>` : `
-    <div style="margin-top:20px;background:#052e16;border:1px solid #166534;border-radius:8px;padding:14px;font-size:13px;color:#86efac;">
-      ✅ <strong>Local Transfer:</strong> This transfer has been processed and funds are on their way.
-    </div>`}
+    ${isIntl
+      ? `<div style="margin-top:20px;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:14px;font-size:13px;color:#94a3b8;">⏳ <strong style="color:#e2e8f0;">International Transfer:</strong> Funds typically arrive within 1–3 business days.</div>`
+      : `<div style="margin-top:20px;background:#052e16;border:1px solid #166534;border-radius:8px;padding:14px;font-size:13px;color:#86efac;">✅ <strong>Local Transfer:</strong> This transfer has been processed and funds are on their way.</div>`
+    }
   `;
 
   const html = `
@@ -182,22 +169,15 @@ export async function sendCreditAlert(params: {
     </head>
     <body>
       <div class="container">
-        <div class="header">
-          <h1>🌿 Evergreen</h1>
-          <p>You've received a transfer</p>
-        </div>
+        <div class="header"><h1>🌿 Evergreen</h1><p>You've received a transfer</p></div>
         <div class="body">${bodyHtml}</div>
-        <div class="footer">© 2026 Evergreen Financial Limited · This is an automated notification.</div>
+        <div class="footer">© 2026 Evergreen Financial Limited · Automated notification.</div>
       </div>
     </body>
     </html>
   `;
 
-  await transporter.sendMail({
-    from:    `"Evergreen Bank" <${process.env.GMAIL_USER}>`,
-    to:      toEmail,
-    subject: `You've received ${receiveStr} from ${senderName}`,
-    html,
-    text: `You have received ${receiveStr} from ${senderName} via Evergreen Bank.\n\nReference: ${reference}\nDescription: ${description}\n\n${isIntl ? "Funds typically arrive within 1–3 business days." : "Funds have been processed."}`,
-  });
+  await send(toEmail, `You've received ${receiveStr} from ${senderName}`, html,
+    `You have received ${receiveStr} from ${senderName} via Evergreen Bank.\n\nReference: ${reference}\nDescription: ${description}\n\n${isIntl ? "Funds typically arrive within 1–3 business days." : "Funds have been processed."}`
+  );
 }
