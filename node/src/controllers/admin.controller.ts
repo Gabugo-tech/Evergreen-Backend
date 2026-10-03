@@ -231,3 +231,32 @@ export async function deleteUser(req: AuthRequest, res: Response, next: NextFunc
     return successResponse(res, { id, email: target.email }, "User deleted successfully");
   } catch (err) { next(err); }
 }
+
+// ─── Test email config (admin only) ──────────────────────────────────────────
+export async function testEmail(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    if (!isAdmin(req)) return errorResponse(res, "Forbidden", 403);
+
+    const gmailUser     = process.env.GMAIL_USER;
+    const gmailPassword = process.env.GMAIL_APP_PASSWORD;
+
+    if (!gmailUser || !gmailPassword) {
+      return errorResponse(res, "GMAIL_USER or GMAIL_APP_PASSWORD not set in environment variables", 500);
+    }
+
+    // Import here to avoid circular deps at module load
+    const { sendPasswordResetOtp } = await import("../services/email");
+
+    // Send a test email to the admin's own address
+    const testOtp = "123456";
+    await sendPasswordResetOtp(gmailUser, testOtp);
+
+    return successResponse(res, {
+      gmail_user: gmailUser,
+      sent_to:    gmailUser,
+    }, `Test email sent successfully to ${gmailUser}`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : "Unknown error";
+    return errorResponse(res, `Email failed: ${msg}`, 500);
+  }
+}

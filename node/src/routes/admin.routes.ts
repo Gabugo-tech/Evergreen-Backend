@@ -32,3 +32,6 @@ router.get("/transfers",    ctrl.listAdminTransfers);
 router.delete("/users/:id", ctrl.deleteUser);
 
 export default router;
+
+// POST /api/admin/test-email — send a test email to verify Gmail config (admin only)
+router.post("/test-email", ctrl.testEmail);
