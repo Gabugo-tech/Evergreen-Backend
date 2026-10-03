@@ -30,6 +30,8 @@ app.use(cors({
       "http://localhost:3001",
       "https://evergreen.vercel.app",
       "https://evergreen-banking-lac.vercel.app",
+      "https://evergreen-frontend-lac.vercel.app",
+      "https://evergreen-world-bank.vercel.app",
     ];
     // Scope the CORS wildcard to this specific Vercel project slug only
     if (allowed.includes(origin) || /https:\/\/evergreen(-[a-z0-9]+)?(-lac)?\.vercel\.app$/.test(origin)) {
