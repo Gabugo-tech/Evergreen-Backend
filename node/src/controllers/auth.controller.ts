@@ -40,9 +40,10 @@ function generateAccountNumber(): string {
   return `${first}${rest}`;
 }
 
-/** Ensure account number is unique — retry up to 10 times */
+/** Ensure account number is unique — retry up to 10 times, including fallback */
 async function uniqueAccountNumber(): Promise<string> {
   const supabase = getSupabase();
+  // Try random numbers first
   for (let i = 0; i < 10; i++) {
     const num = generateAccountNumber();
     const { data } = await supabase
@@ -52,8 +53,17 @@ async function uniqueAccountNumber(): Promise<string> {
       .maybeSingle();
     if (!data) return num;
   }
-  const ts = Date.now().toString().slice(-10).padStart(10, "1");
-  return ts;
+  // Fallback: timestamp-based — also check uniqueness
+  for (let i = 0; i < 5; i++) {
+    const ts = (Date.now() + i).toString().slice(-10).padStart(10, "1");
+    const { data } = await supabase
+      .from("bank_accounts")
+      .select("id")
+      .eq("account_number", ts)
+      .maybeSingle();
+    if (!data) return ts;
+  }
+  throw new AppError("Could not generate unique account number — please try again", 500);
 }
 
 /** Generate a 6-digit numeric OTP */
@@ -125,7 +135,11 @@ export async function register(req: Request, res: Response, next: NextFunction) 
             is_primary:        true,
           });
 
-        if (accErr) throw new AppError(accErr.message, 500);
+        if (accErr) {
+          // Rollback: delete the orphaned user row so registration can be retried
+          await supabase.from("users").delete().eq("id", userId);
+          throw new AppError("Failed to create bank account — please try again", 500);
+        }
       } else {
         // Account already exists — reuse its number
         accountNumber = existingAccount.account_number;
@@ -175,8 +189,18 @@ export async function refresh(req: Request, res: Response, next: NextFunction) {
     const { token: oldToken } = req.body as { token: string };
     if (!oldToken) return errorResponse(res, "Token required", 400);
 
-    const secret = process.env.JWT_SECRET!;
+    const secret  = process.env.JWT_SECRET!;
     const payload = jwt.verify(oldToken, secret, { ignoreExpiration: true }) as { sub: string; email: string; role: string };
+
+    // Verify the user still exists in the DB
+    const { data: dbUser } = await getSupabase()
+      .from("users")
+      .select("id")
+      .eq("id", payload.sub)
+      .maybeSingle();
+
+    if (!dbUser) return errorResponse(res, "User no longer exists", 401);
+
     const token = signToken(payload.sub, payload.email, payload.role);
     return successResponse(res, { token }, "Token refreshed");
   } catch (err) {
@@ -270,14 +294,17 @@ export async function resetPassword(req: Request, res: Response, next: NextFunct
       .eq("email", email)
       .single();
 
-    if (!user?.pin_reset_otp || user.pin_reset_otp !== otp) {
-      return errorResponse(res, "Invalid or expired OTP", 400);
-    }
+    if (!user?.pin_reset_otp) return errorResponse(res, "No OTP requested", 400);
 
+    // Check expiry FIRST — an expired OTP must never be honoured even if correct
     const expired = user.pin_reset_otp_expires_at
       ? new Date(user.pin_reset_otp_expires_at) < new Date()
       : true;
     if (expired) return errorResponse(res, "OTP has expired", 400);
+
+    if (!user.pin_reset_otp || user.pin_reset_otp !== otp) {
+      return errorResponse(res, "Invalid OTP", 400);
+    }
 
     const password_hash = await bcrypt.hash(password, 12);
     const { error } = await supabase
