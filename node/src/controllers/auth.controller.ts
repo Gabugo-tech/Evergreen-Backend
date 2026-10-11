@@ -102,21 +102,34 @@ export async function register(req: Request, res: Response, next: NextFunction) 
     let accountNumber = "";
 
     if (!isAdminEmail) {
-      accountNumber = await uniqueAccountNumber();
-      const { error: accErr } = await supabase
+      // Check if a bank account already exists for this user — prevents duplicates
+      // if registration is retried after a partial failure
+      const { data: existingAccount } = await supabase
         .from("bank_accounts")
-        .insert({
-          user_id:           userId,
-          account_number:    accountNumber,
-          account_name:      `${body.full_name} — Checking`,
-          account_type:      "checking",
-          currency:          "USD",
-          balance:           0,
-          available_balance: 0,
-          is_primary:        true,
-        });
+        .select("account_number")
+        .eq("user_id", userId)
+        .maybeSingle();
 
-      if (accErr) throw new AppError(accErr.message, 500);
+      if (!existingAccount) {
+        accountNumber = await uniqueAccountNumber();
+        const { error: accErr } = await supabase
+          .from("bank_accounts")
+          .insert({
+            user_id:           userId,
+            account_number:    accountNumber,
+            account_name:      `${body.full_name} — Checking`,
+            account_type:      "checking",
+            currency:          "USD",
+            balance:           0,
+            available_balance: 0,
+            is_primary:        true,
+          });
+
+        if (accErr) throw new AppError(accErr.message, 500);
+      } else {
+        // Account already exists — reuse its number
+        accountNumber = existingAccount.account_number;
+      }
     }
 
     const token = signToken(user.id, user.email);
