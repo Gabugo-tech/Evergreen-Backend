@@ -5,10 +5,11 @@ import { AuthRequest } from "../middleware/auth";
 import { successResponse, errorResponse } from "../utils/response";
 import { AppError } from "../middleware/errorHandler";
 
-const ADMIN_EMAIL = "nnanwubagabriel@gmail.com";
+// Admin email driven by env var — never hardcode in source
+const ADMIN_EMAIL = (process.env.ADMIN_EMAIL ?? "nnanwubagabriel@gmail.com").toLowerCase();
 
 function isAdmin(req: AuthRequest): boolean {
-  return req.user?.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase();
+  return req.user?.email?.toLowerCase() === ADMIN_EMAIL;
 }
 
 // ─── Admin stats — real counts from the DB ────────────────────────────────────

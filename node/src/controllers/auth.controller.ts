@@ -190,7 +190,18 @@ export async function refresh(req: Request, res: Response, next: NextFunction) {
     if (!oldToken) return errorResponse(res, "Token required", 400);
 
     const secret  = process.env.JWT_SECRET!;
-    const payload = jwt.verify(oldToken, secret, { ignoreExpiration: true }) as { sub: string; email: string; role: string };
+    const payload = jwt.verify(oldToken, secret, { ignoreExpiration: true }) as {
+      sub: string; email: string; role: string; iat?: number;
+    };
+
+    // Reject tokens issued more than 30 days ago — prevents indefinite refresh chains
+    const MAX_TOKEN_AGE_DAYS = 30;
+    if (payload.iat) {
+      const ageMs = Date.now() - payload.iat * 1000;
+      if (ageMs > MAX_TOKEN_AGE_DAYS * 24 * 60 * 60 * 1000) {
+        return errorResponse(res, "Session expired — please log in again", 401);
+      }
+    }
 
     // Verify the user still exists in the DB
     const { data: dbUser } = await getSupabase()
