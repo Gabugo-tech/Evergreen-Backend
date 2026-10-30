@@ -79,14 +79,13 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
       `totalDebit=${totalDebit.toFixed(4)} | type=${body.transfer_type}`
     );
 
-    // Only block local transfers for insufficient funds.
-    // Round to 2 decimal places to avoid floating-point precision issues.
-    if (body.transfer_type === "local" && Math.round(balance * 100) < Math.round(totalDebit * 100)) {
+    // Block ALL transfers — both local and international — when funds are insufficient.
+    if (Math.round(balance * 100) < Math.round(totalDebit * 100)) {
       console.log(`[sendMoney] INSUFFICIENT balance: ${balance} < ${totalDebit.toFixed(4)}`);
       return errorResponse(res, "Insufficient balance", 422);
     }
     // Also check available_balance independently (may differ due to holds)
-    if (body.transfer_type === "local" && Math.round(availableBalance * 100) < Math.round(totalDebit * 100)) {
+    if (Math.round(availableBalance * 100) < Math.round(totalDebit * 100)) {
       console.log(`[sendMoney] INSUFFICIENT available_balance: ${availableBalance} < ${totalDebit.toFixed(4)}`);
       return errorResponse(res, "Insufficient available balance", 422);
     }
