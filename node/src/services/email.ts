@@ -1,31 +1,21 @@
-import nodemailer from "nodemailer";
+import { BrevoClient } from "@getbrevo/brevo";
 
-// ─── Validate env vars at startup ────────────────────────────────────────────
-if (!process.env.BREVO_SMTP_LOGIN || !process.env.BREVO_SMTP_KEY) {
-  console.warn("[email] BREVO_SMTP_LOGIN or BREVO_SMTP_KEY not set — emails will fail");
+if (!process.env.BREVO_API_KEY) {
+  console.warn("[email] BREVO_API_KEY not set — emails will fail");
 }
 
-// ─── Transporter (Brevo SMTP — better deliverability than HTTP API) ──────────
-const transporter = nodemailer.createTransport({
-  host:   process.env.BREVO_SMTP_HOST   ?? "smtp-relay.brevo.com",
-  port:   Number(process.env.BREVO_SMTP_PORT ?? 587),
-  secure: false, // STARTTLS
-  auth: {
-    user: process.env.BREVO_SMTP_LOGIN,
-    pass: process.env.BREVO_SMTP_KEY,
-  },
-});
+const client = new BrevoClient({ apiKey: process.env.BREVO_API_KEY ?? "" });
 
 const FROM_EMAIL = process.env.BREVO_FROM_EMAIL ?? "noreply@evergreen.com";
 const FROM_NAME  = "Evergreen Bank";
 
 async function send(to: string, subject: string, htmlContent: string, textContent: string) {
-  await transporter.sendMail({
-    from:    `"${FROM_NAME}" <${FROM_EMAIL}>`,
-    to,
+  await client.transactionalEmails.sendTransacEmail({
+    sender:      { name: FROM_NAME, email: FROM_EMAIL },
+    to:          [{ email: to }],
     subject,
-    html:    htmlContent,
-    text:    textContent,
+    htmlContent,
+    textContent,
   });
 }
 
