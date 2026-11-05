@@ -11,6 +11,7 @@ import paymentRoutes      from "./routes/payments.routes";
 import notificationRoutes from "./routes/notifications.routes";
 import userRoutes         from "./routes/users.routes";
 import adminRoutes        from "./routes/admin.routes";
+import chatRoutes         from "./routes/chat.routes";
 import { errorHandler }   from "./middleware/errorHandler";
 import { globalLimiter, authLimiter } from "./middleware/limiters";
 import { logger }         from "./utils/logger";
@@ -84,6 +85,7 @@ app.use("/api/transactions",  transactionRoutes);
 app.use("/api/payments",      paymentRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/admin",         adminRoutes);
+app.use("/api/chat",          chatRoutes);
 // ─── 404 ──────────────────────────────────────────────────────────────────────
 app.use((_req, res) => {
   res.status(404).json({ success: false, error: "Route not found" });
