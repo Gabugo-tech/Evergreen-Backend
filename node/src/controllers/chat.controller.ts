@@ -114,8 +114,23 @@ export async function chat(req: AuthRequest, res: Response, next: NextFunction) 
       history,
     });
 
-    const result = await chatSession.sendMessage({ message });
-    const reply  = result.text ?? "I'm unable to respond right now. Please try again.";
+    // Retry up to 3 times with exponential backoff for transient 503s
+    let result;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        result = await chatSession.sendMessage({ message });
+        break;
+      } catch (retryErr) {
+        const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+        const isTransient = retryMsg.includes("503") || retryMsg.includes("UNAVAILABLE") || retryMsg.includes("high demand");
+        if (isTransient && attempt < 3) {
+          await new Promise(r => setTimeout(r, attempt * 1500));
+          continue;
+        }
+        throw retryErr;
+      }
+    }
+    const reply = result?.text ?? "I'm unable to respond right now. Please try again.";
 
     return successResponse(res, { reply }, "OK");
   } catch (err) {
@@ -127,6 +142,9 @@ export async function chat(req: AuthRequest, res: Response, next: NextFunction) 
     }
     if (msg.includes("quota") || msg.includes("RESOURCE_EXHAUSTED")) {
       return errorResponse(res, "AI service quota exceeded. Please try again later.", 503);
+    }
+    if (msg.includes("UNAVAILABLE") || msg.includes("high demand")) {
+      return errorResponse(res, "Aria is experiencing high demand right now. Please try again in a moment.", 503);
     }
     return errorResponse(res, `AI error: ${msg}`, 500);
   }
