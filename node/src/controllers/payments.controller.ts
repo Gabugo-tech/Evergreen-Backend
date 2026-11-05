@@ -7,6 +7,7 @@ import { sendCreditAlert } from "../services/email";
 import { AuthRequest } from "../middleware/auth";
 import { successResponse, errorResponse } from "../utils/response";
 import { AppError } from "../middleware/errorHandler";
+import { logger } from "../utils/logger";
 
 // Static FX rates relative to USD (in production: fetch from live rate provider)
 const FX_RATES: Record<string, number> = {
@@ -72,21 +73,14 @@ export async function sendMoney(req: AuthRequest, res: Response, next: NextFunct
     const feeInAccountCurrency    = feeUSD * accountRate; // feeUSD * (accountRate / USD_rate=1)
     const totalDebit              = amountInAccountCurrency + feeInAccountCurrency;
 
-    console.log(
-      `[sendMoney] balance=${balance} ${accountCurrency} | ` +
-      `send=${body.amount} ${fromCurrencyUC} → ${amountInAccountCurrency.toFixed(4)} ${accountCurrency} | ` +
-      `fee=$${feeUSD} USD → ${feeInAccountCurrency.toFixed(4)} ${accountCurrency} | ` +
-      `totalDebit=${totalDebit.toFixed(4)} | type=${body.transfer_type}`
-    );
+    logger.debug("[sendMoney] balance check", {
+      balance, accountCurrency, amount: body.amount,
+      fromCurrency: fromCurrencyUC, totalDebit, type: body.transfer_type,
+    });
 
     // Block ALL transfers — both local and international — when funds are insufficient.
     if (Math.round(balance * 100) < Math.round(totalDebit * 100)) {
-      console.log(`[sendMoney] INSUFFICIENT balance: ${balance} < ${totalDebit.toFixed(4)}`);
-      return errorResponse(res, "Insufficient balance", 422);
-    }
-    // Also check available_balance independently (may differ due to holds)
-    if (Math.round(availableBalance * 100) < Math.round(totalDebit * 100)) {
-      console.log(`[sendMoney] INSUFFICIENT available_balance: ${availableBalance} < ${totalDebit.toFixed(4)}`);
+      logger.debug("[sendMoney] insufficient balance", { type: body.transfer_type });
       return errorResponse(res, "Insufficient available balance", 422);
     }
 

@@ -7,14 +7,33 @@ import { successResponse, errorResponse } from "../utils/response";
 import { AppError } from "../middleware/errorHandler";
 
 // ─── Multer: memory storage, 5 MB limit, images only ─────────────────────────
+// Allowed MIME types — SVG excluded to prevent stored XSS
+const ALLOWED_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+
+// Magic byte signatures for server-side file type verification
+const MAGIC_BYTES: Record<string, number[][]> = {
+  "image/jpeg": [[0xFF, 0xD8, 0xFF]],
+  "image/png":  [[0x89, 0x50, 0x4E, 0x47]],
+  "image/webp": [[0x52, 0x49, 0x46, 0x46]], // RIFF....WEBP
+  "image/gif":  [[0x47, 0x49, 0x46, 0x38]],
+};
+
+function validateMagicBytes(buffer: Buffer, mimeType: string): boolean {
+  const signatures = MAGIC_BYTES[mimeType];
+  if (!signatures) return false;
+  return signatures.some(sig =>
+    sig.every((byte, i) => buffer[i] === byte)
+  );
+}
+
 export const avatarUpload = multer({
   storage: multer.memoryStorage(),
   limits:  { fileSize: 5 * 1024 * 1024 },
   fileFilter: (_req: Request, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
-    if (file.mimetype.startsWith("image/")) {
+    if (ALLOWED_MIME_TYPES.has(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new Error("Only image files are allowed"));
+      cb(new Error("Only JPEG, PNG, WebP, or GIF images are allowed"));
     }
   },
 });
@@ -60,6 +79,11 @@ export async function uploadAvatar(req: AuthRequest, res: Response, next: NextFu
   try {
     const file = (req as AuthRequest & { file?: Express.Multer.File }).file;
     if (!file) return errorResponse(res, "No file uploaded", 400);
+
+    // Server-side magic-byte validation — MIME type from headers is client-supplied
+    if (!validateMagicBytes(file.buffer, file.mimetype)) {
+      return errorResponse(res, "File content does not match declared image type", 400);
+    }
 
     const supabase  = getSupabase();
     const userId    = req.user!.id;

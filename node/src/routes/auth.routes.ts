@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { authenticate } from "../middleware/auth";
+import { otpLimiter } from "../middleware/limiters";
 import * as ctrl from "../controllers/auth.controller";
 
 const router = Router();
@@ -10,23 +11,16 @@ router.post("/login",          ctrl.login);
 router.post("/logout",         ctrl.logout);
 router.post("/refresh",        ctrl.refresh);
 router.post("/forgot-password",ctrl.forgotPassword);
-router.post("/verify-otp",     ctrl.verifyOtp);
-router.post("/reset-password", ctrl.resetPassword);
+
+// OTP endpoints get extra strict limiting (5 req / 15 min)
+router.post("/verify-otp",     otpLimiter, ctrl.verifyOtp);
+router.post("/reset-password", otpLimiter, ctrl.resetPassword);
 
 // ── Authenticated routes ──────────────────────────────────────────────────────
-// POST /api/auth/set-pin           — set PIN for first time (existing users)
-router.post("/set-pin",            authenticate, ctrl.setPaymentPin);
-
-// POST /api/auth/verify-pin        — verify payment PIN before a transfer
-router.post("/verify-pin",         authenticate, ctrl.verifyPaymentPin);
-
-// POST /api/auth/request-pin-reset — send OTP to email for PIN reset
+router.post("/set-pin",              authenticate, ctrl.setPaymentPin);
+router.post("/verify-pin",           authenticate, ctrl.verifyPaymentPin);
 router.post("/request-pin-reset",    authenticate, ctrl.requestPinReset);
-
-// POST /api/auth/verify-pin-reset-otp — verify OTP for PIN reset (authenticated)
-router.post("/verify-pin-reset-otp", authenticate, ctrl.verifyPinResetOtp);
-
-// POST /api/auth/reset-pin         — submit OTP + new PIN to complete reset
-router.post("/reset-pin",            authenticate, ctrl.resetPaymentPin);
+router.post("/verify-pin-reset-otp", authenticate, otpLimiter, ctrl.verifyPinResetOtp);
+router.post("/reset-pin",            authenticate, otpLimiter, ctrl.resetPaymentPin);
 
 export default router;

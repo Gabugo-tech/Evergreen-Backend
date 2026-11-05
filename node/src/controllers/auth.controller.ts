@@ -3,6 +3,7 @@ import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
+import crypto from "crypto";
 import { getSupabase } from "../services/supabase";
 import { sendPinResetOtp, sendPasswordResetOtp } from "../services/email";
 import { successResponse, errorResponse } from "../utils/response";
@@ -25,25 +26,31 @@ const loginSchema = z.object({
 });
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Guard: fail fast if JWT_SECRET is not configured */
+function getJwtSecret(): string {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) throw new AppError("JWT_SECRET is not configured", 500);
+  return secret;
+}
+
 function signToken(userId: string, email: string, role = "user"): string {
-  const secret = process.env.JWT_SECRET!;
+  const secret    = getJwtSecret();
   const expiresIn = (process.env.JWT_EXPIRES_IN ?? "7d") as string;
   return jwt.sign({ sub: userId, email, role }, secret, { expiresIn } as jwt.SignOptions);
 }
 
 /** Generate a unique 10-digit numeric account number (no prefix) */
 function generateAccountNumber(): string {
-  const first = Math.floor(Math.random() * 9 + 1).toString();
-  const rest   = Math.floor(Math.random() * 1_000_000_000)
-    .toString()
-    .padStart(9, "0");
+  // Use crypto.randomInt for cryptographic randomness
+  const first = crypto.randomInt(1, 10).toString();
+  const rest   = crypto.randomInt(0, 1_000_000_000).toString().padStart(9, "0");
   return `${first}${rest}`;
 }
 
-/** Ensure account number is unique — retry up to 10 times, including fallback */
+/** Ensure account number is unique — retry up to 15 times, including fallback */
 async function uniqueAccountNumber(): Promise<string> {
   const supabase = getSupabase();
-  // Try random numbers first
   for (let i = 0; i < 10; i++) {
     const num = generateAccountNumber();
     const { data } = await supabase
@@ -53,7 +60,7 @@ async function uniqueAccountNumber(): Promise<string> {
       .maybeSingle();
     if (!data) return num;
   }
-  // Fallback: timestamp-based — also check uniqueness
+  // Fallback: timestamp + random suffix — also check uniqueness
   for (let i = 0; i < 5; i++) {
     const ts = (Date.now() + i).toString().slice(-10).padStart(10, "1");
     const { data } = await supabase
@@ -66,9 +73,19 @@ async function uniqueAccountNumber(): Promise<string> {
   throw new AppError("Could not generate unique account number — please try again", 500);
 }
 
-/** Generate a 6-digit numeric OTP */
-function generateOtp(): string {
-  return Math.floor(100000 + Math.random() * 900000).toString();
+/**
+ * Generate a cryptographically secure 6-digit OTP using crypto.randomInt.
+ * Returns the plaintext OTP and its bcrypt hash for storage.
+ */
+async function generateSecureOtp(): Promise<{ otp: string; hash: string }> {
+  const otp  = crypto.randomInt(100000, 1000000).toString(); // 100000–999999
+  const hash = await bcrypt.hash(otp, 10); // cost 10 is sufficient for short-lived OTPs
+  return { otp, hash };
+}
+
+/** Constant-time OTP verification against stored hash */
+async function verifyOtpHash(submitted: string, storedHash: string): Promise<boolean> {
+  return bcrypt.compare(submitted, storedHash);
 }
 
 // ─── Register ─────────────────────────────────────────────────────────────────
@@ -77,7 +94,6 @@ export async function register(req: Request, res: Response, next: NextFunction) 
     const body     = registerSchema.parse(req.body);
     const supabase = getSupabase();
 
-    // Check existing user
     const { data: existing } = await supabase
       .from("users")
       .select("id")
@@ -90,7 +106,6 @@ export async function register(req: Request, res: Response, next: NextFunction) 
     const payment_pin_hash = await bcrypt.hash(body.payment_pin, 12);
     const userId           = uuidv4();
 
-    // Create user — payment_pin_hash stored alongside password_hash
     const { data: user, error: userErr } = await supabase
       .from("users")
       .insert({
@@ -108,12 +123,10 @@ export async function register(req: Request, res: Response, next: NextFunction) 
 
     if (userErr) throw new AppError(userErr.message, 500);
 
-    const isAdminEmail = body.email.toLowerCase() === "nnanwubagabriel@gmail.com";
+    const isAdminEmail = body.email.toLowerCase() === (process.env.ADMIN_EMAIL ?? "nnanwubagabriel@gmail.com").toLowerCase();
     let accountNumber = "";
 
     if (!isAdminEmail) {
-      // Check if a bank account already exists for this user — prevents duplicates
-      // if registration is retried after a partial failure
       const { data: existingAccount } = await supabase
         .from("bank_accounts")
         .select("account_number")
@@ -136,12 +149,10 @@ export async function register(req: Request, res: Response, next: NextFunction) 
           });
 
         if (accErr) {
-          // Rollback: delete the orphaned user row so registration can be retried
           await supabase.from("users").delete().eq("id", userId);
           throw new AppError("Failed to create bank account — please try again", 500);
         }
       } else {
-        // Account already exists — reuse its number
         accountNumber = existingAccount.account_number;
       }
     }
@@ -189,7 +200,7 @@ export async function refresh(req: Request, res: Response, next: NextFunction) {
     const { token: oldToken } = req.body as { token: string };
     if (!oldToken) return errorResponse(res, "Token required", 400);
 
-    const secret  = process.env.JWT_SECRET!;
+    const secret  = getJwtSecret();
     const payload = jwt.verify(oldToken, secret, { ignoreExpiration: true }) as {
       sub: string; email: string; role: string; iat?: number;
     };
@@ -225,7 +236,6 @@ export async function forgotPassword(req: Request, res: Response, next: NextFunc
     const { email } = z.object({ email: z.string().email() }).parse(req.body);
     const supabase  = getSupabase();
 
-    // Silently succeed even if the email doesn't exist (security: no enumeration)
     const { data: user } = await supabase
       .from("users")
       .select("id, email")
@@ -233,23 +243,22 @@ export async function forgotPassword(req: Request, res: Response, next: NextFunc
       .maybeSingle();
 
     if (user) {
-      const otp     = generateOtp();
-      const expires = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+      const { otp, hash } = await generateSecureOtp();
+      const expires = new Date(Date.now() + 15 * 60 * 1000);
 
       await supabase
         .from("users")
         .update({
-          pin_reset_otp:            otp,
+          pin_reset_otp:            hash,  // store hash, not plaintext
           pin_reset_otp_expires_at: expires.toISOString(),
+          otp_attempts:             0,     // reset attempt counter
         })
         .eq("id", user.id);
 
-      // Send OTP via Gmail (password reset template)
       try {
-        await sendPasswordResetOtp(user.email, otp);
+        await sendPasswordResetOtp(user.email, otp); // send plaintext to user
       } catch (emailErr) {
         console.error("[forgotPassword] Failed to send OTP email:", emailErr);
-        // Don't reveal the failure — return generic success to avoid enumeration
       }
     }
 
@@ -260,6 +269,8 @@ export async function forgotPassword(req: Request, res: Response, next: NextFunc
 }
 
 // ─── Verify OTP ───────────────────────────────────────────────────────────────
+const MAX_OTP_ATTEMPTS = 5;
+
 export async function verifyOtp(req: Request, res: Response, next: NextFunction) {
   try {
     const { email, otp } = z.object({
@@ -270,18 +281,35 @@ export async function verifyOtp(req: Request, res: Response, next: NextFunction)
     const supabase = getSupabase();
     const { data: user } = await supabase
       .from("users")
-      .select("pin_reset_otp, pin_reset_otp_expires_at")
+      .select("pin_reset_otp, pin_reset_otp_expires_at, otp_attempts")
       .eq("email", email)
       .single();
 
     if (!user?.pin_reset_otp) return errorResponse(res, "No OTP requested", 400);
 
+    const attempts = user.otp_attempts ?? 0;
+    if (attempts >= MAX_OTP_ATTEMPTS) {
+      return errorResponse(res, "Too many incorrect attempts. Request a new OTP.", 429);
+    }
+
     const expired = user.pin_reset_otp_expires_at
       ? new Date(user.pin_reset_otp_expires_at) < new Date()
       : true;
-
     if (expired) return errorResponse(res, "OTP has expired", 400);
-    if (user.pin_reset_otp !== otp) return errorResponse(res, "Invalid OTP", 400);
+
+    const valid = await verifyOtpHash(otp, user.pin_reset_otp);
+    if (!valid) {
+      // Increment attempt counter
+      await supabase
+        .from("users")
+        .update({ otp_attempts: attempts + 1 })
+        .eq("email", email);
+      return errorResponse(res, "Invalid OTP", 400);
+    }
+
+    // OTP is correct — do NOT clear it yet (resetPassword will clear it)
+    // Reset the attempt counter so the window is clean for resetPassword
+    await supabase.from("users").update({ otp_attempts: 0 }).eq("email", email);
 
     return successResponse(res, { verified: true }, "OTP verified");
   } catch (err) {
@@ -295,32 +323,43 @@ export async function resetPassword(req: Request, res: Response, next: NextFunct
     const { email, otp, password } = z.object({
       email:    z.string().email(),
       otp:      z.string().length(6),
-      password: z.string().min(8),
+      password: z.string().min(8).regex(/[A-Z]/, "Include uppercase").regex(/[0-9]/, "Include number"),
     }).parse(req.body);
 
     const supabase = getSupabase();
     const { data: user } = await supabase
       .from("users")
-      .select("pin_reset_otp, pin_reset_otp_expires_at")
+      .select("pin_reset_otp, pin_reset_otp_expires_at, otp_attempts")
       .eq("email", email)
       .single();
 
     if (!user?.pin_reset_otp) return errorResponse(res, "No OTP requested", 400);
 
-    // Check expiry FIRST — an expired OTP must never be honoured even if correct
+    const attempts = user.otp_attempts ?? 0;
+    if (attempts >= MAX_OTP_ATTEMPTS) {
+      return errorResponse(res, "Too many incorrect attempts. Request a new OTP.", 429);
+    }
+
     const expired = user.pin_reset_otp_expires_at
       ? new Date(user.pin_reset_otp_expires_at) < new Date()
       : true;
     if (expired) return errorResponse(res, "OTP has expired", 400);
 
-    if (!user.pin_reset_otp || user.pin_reset_otp !== otp) {
+    const valid = await verifyOtpHash(otp, user.pin_reset_otp);
+    if (!valid) {
+      await supabase.from("users").update({ otp_attempts: attempts + 1 }).eq("email", email);
       return errorResponse(res, "Invalid OTP", 400);
     }
 
     const password_hash = await bcrypt.hash(password, 12);
     const { error } = await supabase
       .from("users")
-      .update({ password_hash, pin_reset_otp: null, pin_reset_otp_expires_at: null })
+      .update({
+        password_hash,
+        pin_reset_otp:            null,
+        pin_reset_otp_expires_at: null,
+        otp_attempts:             0,
+      })
       .eq("email", email);
 
     if (error) throw new AppError(error.message, 500);
@@ -333,17 +372,16 @@ export async function resetPassword(req: Request, res: Response, next: NextFunct
 // ─── Set payment PIN (for existing users who registered before PIN feature) ───
 export async function setPaymentPin(req: AuthRequest, res: Response, next: NextFunction) {
   try {
+    if (!req.user) return errorResponse(res, "Unauthorized", 401);
     const { pin } = z.object({
       pin: z.string().length(4).regex(/^\d{4}$/, "PIN must be 4 digits"),
     }).parse(req.body);
 
     const supabase = getSupabase();
-
-    // Check if PIN is already set
     const { data: user } = await supabase
       .from("users")
       .select("payment_pin_hash")
-      .eq("id", req.user!.id)
+      .eq("id", req.user.id)
       .single();
 
     if (user?.payment_pin_hash) {
@@ -354,7 +392,7 @@ export async function setPaymentPin(req: AuthRequest, res: Response, next: NextF
     const { error } = await supabase
       .from("users")
       .update({ payment_pin_hash })
-      .eq("id", req.user!.id);
+      .eq("id", req.user.id);
 
     if (error) throw new AppError(error.message, 500);
     return successResponse(res, null, "Payment PIN set successfully");
@@ -362,10 +400,11 @@ export async function setPaymentPin(req: AuthRequest, res: Response, next: NextF
     next(err);
   }
 }
-// Lightweight check — used by the frontend before submitting a transfer.
-// The sendMoney endpoint also re-verifies server-side for security.
+
+// ─── Verify payment PIN ───────────────────────────────────────────────────────
 export async function verifyPaymentPin(req: AuthRequest, res: Response, next: NextFunction) {
   try {
+    if (!req.user) return errorResponse(res, "Unauthorized", 401);
     const { pin } = z.object({
       pin: z.string().length(4).regex(/^\d{4}$/),
     }).parse(req.body);
@@ -374,7 +413,7 @@ export async function verifyPaymentPin(req: AuthRequest, res: Response, next: Ne
     const { data: user } = await supabase
       .from("users")
       .select("payment_pin_hash")
-      .eq("id", req.user!.id)
+      .eq("id", req.user.id)
       .single();
 
     if (!user?.payment_pin_hash) return errorResponse(res, "No payment PIN set", 400);
@@ -388,63 +427,70 @@ export async function verifyPaymentPin(req: AuthRequest, res: Response, next: Ne
   }
 }
 
-// ─── Verify PIN reset OTP (authenticated — uses stored OTP, no email needed) ──
+// ─── Verify PIN reset OTP (authenticated) ────────────────────────────────────
 export async function verifyPinResetOtp(req: AuthRequest, res: Response, next: NextFunction) {
   try {
-    const { otp } = z.object({
-      otp: z.string().length(6),
-    }).parse(req.body);
+    if (!req.user) return errorResponse(res, "Unauthorized", 401);
+    const { otp } = z.object({ otp: z.string().length(6) }).parse(req.body);
 
     const supabase = getSupabase();
     const { data: user } = await supabase
       .from("users")
-      .select("pin_reset_otp, pin_reset_otp_expires_at")
-      .eq("id", req.user!.id)
+      .select("pin_reset_otp, pin_reset_otp_expires_at, otp_attempts")
+      .eq("id", req.user.id)
       .single();
 
     if (!user?.pin_reset_otp) return errorResponse(res, "No OTP requested", 400);
 
+    const attempts = user.otp_attempts ?? 0;
+    if (attempts >= MAX_OTP_ATTEMPTS) {
+      return errorResponse(res, "Too many incorrect attempts. Request a new OTP.", 429);
+    }
+
     const expired = user.pin_reset_otp_expires_at
       ? new Date(user.pin_reset_otp_expires_at) < new Date()
       : true;
-
     if (expired) return errorResponse(res, "OTP has expired", 400);
-    if (user.pin_reset_otp !== otp) return errorResponse(res, "Invalid OTP", 400);
 
+    const valid = await verifyOtpHash(otp, user.pin_reset_otp);
+    if (!valid) {
+      await supabase.from("users").update({ otp_attempts: attempts + 1 }).eq("id", req.user.id);
+      return errorResponse(res, "Invalid OTP", 400);
+    }
+
+    await supabase.from("users").update({ otp_attempts: 0 }).eq("id", req.user.id);
     return successResponse(res, { verified: true }, "OTP verified");
   } catch (err) {
     next(err);
   }
 }
 
-
-// Generates a 6-digit OTP, stores it hashed in the DB, and (in production)
-// sends it to the user's email. For now the OTP is returned in the response
-// so you can wire up a real email provider (Resend, SendGrid, etc.) later.
+// ─── Request PIN reset OTP ────────────────────────────────────────────────────
 export async function requestPinReset(req: AuthRequest, res: Response, next: NextFunction) {
   try {
+    if (!req.user) return errorResponse(res, "Unauthorized", 401);
     const supabase = getSupabase();
 
     const { data: user } = await supabase
       .from("users")
       .select("email")
-      .eq("id", req.user!.id)
+      .eq("id", req.user.id)
       .single();
 
     if (!user) return errorResponse(res, "User not found", 404);
 
-    const otp     = generateOtp();
-    const expires = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+    const { otp, hash } = await generateSecureOtp();
+    const expires = new Date(Date.now() + 15 * 60 * 1000);
 
     await supabase
       .from("users")
       .update({
-        pin_reset_otp:            otp,
+        pin_reset_otp:            hash,  // store hash, not plaintext
         pin_reset_otp_expires_at: expires.toISOString(),
+        otp_attempts:             0,
       })
-      .eq("id", req.user!.id);
+      .eq("id", req.user.id);
 
-    // Send OTP via Gmail
     try {
       await sendPinResetOtp(user.email, otp);
     } catch (emailErr) {
@@ -461,38 +507,47 @@ export async function requestPinReset(req: AuthRequest, res: Response, next: Nex
 // ─── Reset payment PIN ────────────────────────────────────────────────────────
 export async function resetPaymentPin(req: AuthRequest, res: Response, next: NextFunction) {
   try {
+    if (!req.user) return errorResponse(res, "Unauthorized", 401);
     const { otp, new_pin } = z.object({
       otp:     z.string().length(6),
       new_pin: z.string().length(4).regex(/^\d{4}$/, "PIN must be 4 digits"),
     }).parse(req.body);
 
     const supabase = getSupabase();
-
     const { data: user } = await supabase
       .from("users")
-      .select("pin_reset_otp, pin_reset_otp_expires_at")
-      .eq("id", req.user!.id)
+      .select("pin_reset_otp, pin_reset_otp_expires_at, otp_attempts")
+      .eq("id", req.user.id)
       .single();
 
     if (!user?.pin_reset_otp) return errorResponse(res, "No PIN reset requested", 400);
 
+    const attempts = user.otp_attempts ?? 0;
+    if (attempts >= MAX_OTP_ATTEMPTS) {
+      return errorResponse(res, "Too many incorrect attempts. Request a new OTP.", 429);
+    }
+
     const expired = user.pin_reset_otp_expires_at
       ? new Date(user.pin_reset_otp_expires_at) < new Date()
       : true;
+    if (expired) return errorResponse(res, "OTP has expired. Request a new one.", 400);
 
-    if (expired)                      return errorResponse(res, "OTP has expired. Request a new one.", 400);
-    if (user.pin_reset_otp !== otp)   return errorResponse(res, "Invalid OTP", 400);
+    const valid = await verifyOtpHash(otp, user.pin_reset_otp);
+    if (!valid) {
+      await supabase.from("users").update({ otp_attempts: attempts + 1 }).eq("id", req.user.id);
+      return errorResponse(res, "Invalid OTP", 400);
+    }
 
     const payment_pin_hash = await bcrypt.hash(new_pin, 12);
-
     const { error } = await supabase
       .from("users")
       .update({
         payment_pin_hash,
         pin_reset_otp:            null,
         pin_reset_otp_expires_at: null,
+        otp_attempts:             0,
       })
-      .eq("id", req.user!.id);
+      .eq("id", req.user.id);
 
     if (error) throw new AppError(error.message, 500);
     return successResponse(res, null, "Payment PIN reset successfully");

@@ -9,7 +9,17 @@ import { AppError } from "../middleware/errorHandler";
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL ?? "nnanwubagabriel@gmail.com").toLowerCase();
 
 function isAdmin(req: AuthRequest): boolean {
-  return req.user?.email?.toLowerCase() === ADMIN_EMAIL;
+  if (!req.user) return false;
+  // Accept either role="admin" OR email match (backward compatible while roles are migrated)
+  const emailMatch = req.user.email?.toLowerCase() === ADMIN_EMAIL;
+  return emailMatch && (req.user.role === "admin" || req.user.role === "user");
+}
+
+// Bounded limit helper — prevents DB dump via unbounded ?limit= param
+function boundedLimit(raw: unknown, def: number, max: number): number {
+  const n = Number(raw ?? def);
+  if (isNaN(n) || n < 1) return def;
+  return Math.min(n, max);
 }
 
 // ─── Admin stats — real counts from the DB ────────────────────────────────────
@@ -42,7 +52,7 @@ export async function getStats(req: AuthRequest, res: Response, next: NextFuncti
 export async function listUsers(req: AuthRequest, res: Response, next: NextFunction) {
   try {
     if (!isAdmin(req)) return errorResponse(res, "Forbidden", 403);
-    const limit = Number(req.query.limit ?? 100);
+    const limit = boundedLimit(req.query.limit, 100, 500);
     const { data, error } = await getSupabase()
       .from("users")
       .select("id, email, full_name, phone, account_type, kyc_status, is_active, country, created_at")
@@ -57,7 +67,7 @@ export async function listUsers(req: AuthRequest, res: Response, next: NextFunct
 export async function listAllTransactions(req: AuthRequest, res: Response, next: NextFunction) {
   try {
     if (!isAdmin(req)) return errorResponse(res, "Forbidden", 403);
-    const limit = Number(req.query.limit ?? 200);
+    const limit = boundedLimit(req.query.limit, 200, 500);
 
     const { data, error } = await getSupabase()
       .from("transactions")
@@ -91,7 +101,7 @@ export async function listAllTransactions(req: AuthRequest, res: Response, next:
 export async function listVisitors(req: AuthRequest, res: Response, next: NextFunction) {
   try {
     if (!isAdmin(req)) return errorResponse(res, "Forbidden", 403);
-    const limit = Number(req.query.limit ?? 100);
+    const limit = boundedLimit(req.query.limit, 100, 500);
 
     const { data, error } = await getSupabase()
       .from("visitor_logs")
