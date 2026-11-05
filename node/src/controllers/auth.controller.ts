@@ -181,12 +181,11 @@ export async function login(req: Request, res: Response, next: NextFunction) {
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) return errorResponse(res, "Invalid credentials", 401);
 
-    if (!user.is_active) return errorResponse(res, "Your account has been suspended. Please contact support.", 403);
-
+    // Suspended users are allowed through login — frontend redirects them to /suspended.
+    // is_active is included in safeUser so the client can detect suspension.
     const { password_hash: _, ...safeUser } = user;
     const token = signToken(user.id, user.email);
-    return successResponse(res, { token, user: safeUser }, "Login successful");
-  } catch (err) {
+    return successResponse(res, { token, user: safeUser }, "Login successful");  } catch (err) {
     next(err);
   }
 }
