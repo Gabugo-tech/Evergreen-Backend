@@ -1,110 +1,89 @@
-import { BrevoClient } from "@getbrevo/brevo";
+/**
+ * Email service — powered by Google Apps Script (GmailApp).
+ * All emails are sent from evergreenworldbank@gmail.com via the deployed Web App.
+ * Script URL is stored in GOOGLE_SCRIPT_URL env var.
+ */
 
-if (!process.env.BREVO_API_KEY) {
-  console.warn("[email] BREVO_API_KEY not set — emails will fail");
+const SCRIPT_URL = process.env.GOOGLE_SCRIPT_URL ?? "";
+
+if (!SCRIPT_URL) {
+  console.warn("[email] GOOGLE_SCRIPT_URL not set — emails will fail");
 }
 
-const client = new BrevoClient({ apiKey: process.env.BREVO_API_KEY ?? "" });
+/**
+ * Core POST function — sends a JSON payload to the Google Apps Script Web App.
+ * The script handles all email rendering and delivery via GmailApp.
+ */
+async function callScript(payload: Record<string, unknown>): Promise<void> {
+  if (!SCRIPT_URL) throw new Error("GOOGLE_SCRIPT_URL is not configured");
 
-const FROM_EMAIL = process.env.BREVO_FROM_EMAIL ?? "noreply@evergreen.com";
-const FROM_NAME  = "Evergreen Bank";
-
-async function send(to: string, subject: string, htmlContent: string, textContent: string) {
-  await client.transactionalEmails.sendTransacEmail({
-    sender:      { name: FROM_NAME, email: FROM_EMAIL },
-    to:          [{ email: to }],
-    subject,
-    htmlContent,
-    textContent,
+  const res = await fetch(SCRIPT_URL, {
+    method:  "POST",
+    headers: { "Content-Type": "application/json" },
+    body:    JSON.stringify(payload),
   });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "no body");
+    throw new Error(`Google Script responded ${res.status}: ${text}`);
+  }
+
+  const json = await res.json().catch(() => ({}));
+  if (json.success === false) {
+    throw new Error(`Google Script error: ${json.error ?? "unknown"}`);
+  }
 }
 
-function buildOtpEmail(subtitle: string, message: string, otp: string): string {
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"/><style>
-    body{font-family:sans-serif;background:#0f172a;color:#e2e8f0;margin:0;padding:0}
-    .c{max-width:480px;margin:40px auto;background:#1e293b;border-radius:16px;overflow:hidden;border:1px solid #334155}
-    .h{background:linear-gradient(135deg,#2563eb,#1d4ed8);padding:32px 40px;text-align:center}
-    .h h1{color:#fff;font-size:24px;margin:0;font-weight:700}
-    .h p{color:rgba(255,255,255,.7);margin:6px 0 0;font-size:14px}
-    .b{padding:36px 40px}
-    .otp{background:#0f172a;border:2px solid #2563eb;border-radius:12px;padding:24px;text-align:center;margin:24px 0}
-    .code{font-size:40px;font-weight:800;letter-spacing:12px;color:#60a5fa;font-family:monospace}
-    .note{font-size:13px;color:#94a3b8;margin-top:8px}
-    .warn{background:#451a03;border:1px solid #92400e;border-radius:8px;padding:12px 16px;font-size:13px;color:#fbbf24;margin-top:20px}
-    .f{padding:20px 40px;border-top:1px solid #334155;font-size:12px;color:#475569;text-align:center}
-  </style></head><body><div class="c">
-    <div class="h"><h1>🌿 Evergreen</h1><p>${subtitle}</p></div>
-    <div class="b">
-      <p>${message}</p>
-      <div class="otp"><div class="code">${otp}</div><div class="note">Expires in 15 minutes</div></div>
-      <div class="warn">⚠️ Never share this code. Evergreen staff will never ask for your OTP.</div>
-    </div>
-    <div class="f">© 2026 Evergreen Financial Limited</div>
-  </div></body></html>`;
-}
-
+/** Send password reset OTP */
 export async function sendPasswordResetOtp(toEmail: string, otp: string): Promise<void> {
-  await send(toEmail, "Your Evergreen Password Reset Code",
-    buildOtpEmail("Reset your password", "Use the code below to reset your Evergreen account password:", otp),
-    `Your Evergreen password reset code is: ${otp}\n\nExpires in 15 minutes.`
-  );
+  await callScript({ type: "password_reset", to: toEmail, otp });
 }
 
+/** Send payment PIN reset OTP */
 export async function sendPinResetOtp(toEmail: string, otp: string): Promise<void> {
-  await send(toEmail, "Your Evergreen Payment PIN Reset Code",
-    buildOtpEmail("Reset your payment PIN", "Use the code below to reset your Evergreen payment PIN:", otp),
-    `Your Evergreen payment PIN reset code is: ${otp}\n\nExpires in 15 minutes.`
-  );
+  await callScript({ type: "pin_reset", to: toEmail, otp });
 }
 
+/** Send credit alert to recipient */
 export async function sendCreditAlert(params: {
-  toEmail: string; senderName: string; amount: number; fromCurrency: string;
-  toCurrency: string; toAmount: number; reference: string; description: string;
-  transferType: "local" | "international"; date: string;
-  recipientNewBalance?: number; recipientCurrency?: string;
+  toEmail:              string;
+  senderName:           string;
+  amount:               number;
+  fromCurrency:         string;
+  toCurrency:           string;
+  toAmount:             number;
+  reference:            string;
+  description:          string;
+  transferType:         "local" | "international";
+  date:                 string;
+  recipientNewBalance?: number;
+  recipientCurrency?:   string;
 }): Promise<void> {
-  const { toEmail, senderName, amount, fromCurrency, toCurrency, toAmount, reference, description, transferType, date, recipientNewBalance, recipientCurrency } = params;
+  const {
+    toEmail, senderName, amount, fromCurrency,
+    toCurrency, toAmount, reference, description,
+    transferType, date, recipientNewBalance, recipientCurrency,
+  } = params;
+
   const isIntl     = transferType === "international";
   const amountStr  = `${amount.toLocaleString(undefined, { minimumFractionDigits: 2 })} ${fromCurrency}`;
   const receiveStr = isIntl && toCurrency !== fromCurrency
     ? `${toAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })} ${toCurrency}`
     : amountStr;
 
-  const balanceRow = (recipientNewBalance !== undefined && recipientCurrency)
-    ? `<tr><td style="color:#94a3b8">Your New Balance</td><td style="text-align:right;font-weight:700;color:#4ade80;font-size:16px">${recipientNewBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })} ${recipientCurrency}</td></tr>`
-    : "";
-
-  const htmlContent = `<!DOCTYPE html><html><head><meta charset="utf-8"/><style>
-    body{font-family:sans-serif;background:#0f172a;color:#e2e8f0;margin:0;padding:0}
-    .c{max-width:520px;margin:40px auto;background:#1e293b;border-radius:16px;overflow:hidden;border:1px solid #334155}
-    .h{background:linear-gradient(135deg,#2563eb,#1d4ed8);padding:32px 40px;text-align:center}
-    .h h1{color:#fff;font-size:24px;margin:0;font-weight:700}
-    .h p{color:rgba(255,255,255,.7);margin:6px 0 0;font-size:14px}
-    .b{padding:36px 40px}
-    table{width:100%;border-collapse:collapse;font-size:14px}
-    td{padding:10px 0;border-bottom:1px solid #334155}
-    .f{padding:20px 40px;border-top:1px solid #334155;font-size:12px;color:#475569;text-align:center}
-  </style></head><body><div class="c">
-    <div class="h"><h1>🌿 Evergreen</h1><p>You've received a transfer</p></div>
-    <div class="b">
-      <p>You have received a transfer from <strong>${senderName}</strong> via Evergreen Bank.</p>
-      <table>
-        <tr><td style="color:#94a3b8">Amount Sent</td><td style="text-align:right;font-weight:600">${amountStr}</td></tr>
-        <tr><td style="color:#94a3b8">Amount to Receive</td><td style="text-align:right;font-weight:700;color:#60a5fa;font-size:18px">${receiveStr}</td></tr>
-        <tr><td style="color:#94a3b8">From</td><td style="text-align:right;font-weight:600">${senderName}</td></tr>
-        <tr><td style="color:#94a3b8">Reference</td><td style="text-align:right;font-family:monospace">${reference}</td></tr>
-        <tr><td style="color:#94a3b8">Description</td><td style="text-align:right">${description}</td></tr>
-        <tr><td style="color:#94a3b8">Date</td><td style="text-align:right">${new Date(date).toLocaleString()}</td></tr>
-        ${balanceRow}
-      </table>
-      ${isIntl
-        ? `<div style="margin-top:20px;background:#0f172a;border:1px solid #334155;border-radius:8px;padding:14px;font-size:13px;color:#94a3b8">⏳ <strong style="color:#e2e8f0">International Transfer:</strong> Funds typically arrive within 1–3 business days.</div>`
-        : `<div style="margin-top:20px;background:#052e16;border:1px solid #166534;border-radius:8px;padding:14px;font-size:13px;color:#86efac">✅ <strong>Local Transfer:</strong> Funds have been processed.</div>`}
-    </div>
-    <div class="f">© 2026 Evergreen Financial Limited · Automated notification.</div>
-  </div></body></html>`;
-
-  await send(toEmail, `You've received ${receiveStr} from ${senderName}`, htmlContent,
-    `You received ${receiveStr} from ${senderName}.\n\nRef: ${reference}\nDesc: ${description}\n${isIntl ? "Arrives in 1–3 business days." : "Funds processed."}`
-  );
+  await callScript({
+    type:                 "credit_alert",
+    to:                   toEmail,
+    senderName,
+    amountStr,
+    receiveStr,
+    reference,
+    description,
+    transferType,
+    date:                 new Date(date).toLocaleString(),
+    recipientNewBalance:  recipientNewBalance !== undefined
+      ? `${recipientNewBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}`
+      : undefined,
+    recipientCurrency,
+  });
 }
