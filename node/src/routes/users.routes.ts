@@ -11,8 +11,11 @@ router.get("/me",         ctrl.getProfile);
 // PATCH /api/users/me        — update profile
 router.patch("/me",       ctrl.updateProfile);
 
-// POST  /api/users/me/avatar — upload avatar (multipart/form-data, field: "avatar")
-router.post("/me/avatar", ctrl.avatarUpload.single("avatar"), ctrl.uploadAvatar);
+// POST   /api/users/me/avatar — upload avatar (multipart/form-data, field: "avatar")
+router.post("/me/avatar",   ctrl.avatarUpload.single("avatar"), ctrl.uploadAvatar);
+
+// DELETE /api/users/me/avatar — remove avatar
+router.delete("/me/avatar", ctrl.removeAvatar);
 
 // GET   /api/users/me/kyc   — KYC status
 router.get("/me/kyc",     ctrl.getKycStatus);

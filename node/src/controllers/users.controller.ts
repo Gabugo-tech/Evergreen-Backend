@@ -123,6 +123,32 @@ export async function uploadAvatar(req: AuthRequest, res: Response, next: NextFu
   }
 }
 
+export async function removeAvatar(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    const supabase = getSupabase();
+    const userId   = req.user!.id;
+
+    // Try to delete the file from storage (both jpg and png/webp variants)
+    const extensions = ["jpg", "png", "webp", "gif"];
+    for (const ext of extensions) {
+      await supabase.storage.from("avatars").remove([`avatars/${userId}.${ext}`]);
+    }
+
+    // Clear avatar_url in the users table
+    const { data, error } = await supabase
+      .from("users")
+      .update({ avatar_url: null, updated_at: new Date().toISOString() })
+      .eq("id", userId)
+      .select("id, email, full_name, avatar_url, account_type, kyc_status")
+      .single();
+
+    if (error) throw new AppError(error.message, 500);
+    return successResponse(res, data, "Profile photo removed");
+  } catch (err) {
+    next(err);
+  }
+}
+
 export async function getKycStatus(req: AuthRequest, res: Response, next: NextFunction) {
   try {
     const { data, error } = await getSupabase()
