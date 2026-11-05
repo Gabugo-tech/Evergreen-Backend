@@ -1,16 +1,17 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
+import { getSupabase } from "../services/supabase";
 import { errorResponse } from "../utils/response";
 
 export interface AuthRequest extends Request {
   user?: { id: string; email: string; role: string };
 }
 
-export function authenticate(
+export async function authenticate(
   req: AuthRequest,
   res: Response,
   next: NextFunction
-): void {
+): Promise<void> {
   const header = req.headers.authorization;
 
   if (!header?.startsWith("Bearer ")) {
@@ -29,6 +30,23 @@ export function authenticate(
       email: string;
       role: string;
     };
+
+    // Check the user still exists and is not suspended
+    const { data: dbUser } = await getSupabase()
+      .from("users")
+      .select("id, is_active")
+      .eq("id", payload.sub)
+      .maybeSingle();
+
+    if (!dbUser) {
+      errorResponse(res, "User no longer exists", 401);
+      return;
+    }
+
+    if (!dbUser.is_active) {
+      errorResponse(res, "Your account has been suspended. Please contact support.", 403);
+      return;
+    }
 
     req.user = { id: payload.sub, email: payload.email, role: payload.role };
     next();
