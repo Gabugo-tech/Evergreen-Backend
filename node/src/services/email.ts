@@ -28,7 +28,7 @@ async function callScript(payload: Record<string, unknown>): Promise<void> {
     throw new Error(`Google Script responded ${res.status}: ${text}`);
   }
 
-  const json = await res.json().catch(() => ({}));
+  const json = await res.json().catch(() => ({})) as { success?: boolean; error?: string };
   if (json.success === false) {
     throw new Error(`Google Script error: ${json.error ?? "unknown"}`);
   }
