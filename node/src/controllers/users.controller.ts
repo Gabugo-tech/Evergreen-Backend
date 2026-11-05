@@ -10,20 +10,35 @@ import { AppError } from "../middleware/errorHandler";
 // Allowed MIME types — SVG excluded to prevent stored XSS
 const ALLOWED_MIME_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
 
-// Magic byte signatures for server-side file type verification
-const MAGIC_BYTES: Record<string, number[][]> = {
-  "image/jpeg": [[0xFF, 0xD8, 0xFF]],
-  "image/png":  [[0x89, 0x50, 0x4E, 0x47]],
-  "image/webp": [[0x52, 0x49, 0x46, 0x46]], // RIFF....WEBP
-  "image/gif":  [[0x47, 0x49, 0x46, 0x38]],
-};
+/**
+ * Detect the actual image type from magic bytes, regardless of declared MIME type.
+ * Returns the detected MIME type string, or null if not a recognised image format.
+ */
+function detectImageType(buffer: Buffer): string | null {
+  if (buffer.length < 12) return null;
 
-function validateMagicBytes(buffer: Buffer, mimeType: string): boolean {
-  const signatures = MAGIC_BYTES[mimeType];
-  if (!signatures) return false;
-  return signatures.some(sig =>
-    sig.every((byte, i) => buffer[i] === byte)
-  );
+  // JPEG: FF D8 FF
+  if (buffer[0] === 0xFF && buffer[1] === 0xD8 && buffer[2] === 0xFF) return "image/jpeg";
+
+  // PNG: 89 50 4E 47 0D 0A 1A 0A
+  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47) return "image/png";
+
+  // WebP: RIFF????WEBP (bytes 0-3 = RIFF, bytes 8-11 = WEBP)
+  if (
+    buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 &&
+    buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50
+  ) return "image/webp";
+
+  // GIF: GIF87a or GIF89a
+  if (buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x38) return "image/gif";
+
+  return null;
+}
+
+function validateMagicBytes(buffer: Buffer, _mimeType: string): boolean {
+  // Accept the file if we can detect it as any supported image type,
+  // regardless of what MIME type the client declared.
+  return detectImageType(buffer) !== null;
 }
 
 export const avatarUpload = multer({
@@ -80,14 +95,16 @@ export async function uploadAvatar(req: AuthRequest, res: Response, next: NextFu
     const file = (req as AuthRequest & { file?: Express.Multer.File }).file;
     if (!file) return errorResponse(res, "No file uploaded", 400);
 
-    // Server-side magic-byte validation — MIME type from headers is client-supplied
-    if (!validateMagicBytes(file.buffer, file.mimetype)) {
+    // Server-side magic-byte validation — detect actual type from file content
+    const detectedType = detectImageType(file.buffer);
+    if (!detectedType) {
       return errorResponse(res, "File content does not match declared image type", 400);
     }
 
     const supabase  = getSupabase();
     const userId    = req.user!.id;
-    const ext       = file.mimetype.split("/")[1]?.replace("jpeg", "jpg") ?? "jpg";
+    // Use detected type for extension — don't trust client-declared MIME
+    const ext       = detectedType.split("/")[1]?.replace("jpeg", "jpg") ?? "jpg";
     const path      = `avatars/${userId}.${ext}`;
 
     // Upsert into Supabase Storage bucket "avatars" (create it if it doesn't exist)
