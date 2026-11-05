@@ -1,5 +1,5 @@
 import { Response, NextFunction } from "express";
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenAI } from "@google/genai";
 import { z } from "zod";
 import { getSupabase } from "../services/supabase";
 import { AuthRequest } from "../middleware/auth";
@@ -9,7 +9,8 @@ if (!process.env.GEMINI_API_KEY) {
   console.warn("[chat] GEMINI_API_KEY not set — AI chat will fail");
 }
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY ?? "");
+// New SDK — supports both AIza and AQ. key formats
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY ?? "" });
 
 const messageSchema = z.object({
   message: z.string().min(1).max(1000),
@@ -19,7 +20,7 @@ const messageSchema = z.object({
   })).max(20).optional().default([]),
 });
 
-const SYSTEM_PROMPT = `You are Aria, Evergreen Bank's friendly and knowledgeable AI assistant. 
+const SYSTEM_PROMPT = `You are Aria, Evergreen Bank's friendly and knowledgeable AI assistant.
 You help customers with their banking questions in a clear, concise, and professional manner.
 
 About Evergreen Bank:
@@ -101,39 +102,32 @@ export async function chat(req: AuthRequest, res: Response, next: NextFunction) 
     const { message, history } = messageSchema.parse(req.body);
     const userId = req.user!.id;
 
-    // Fetch real account context for this user
     const userContext = await getUserContext(userId);
 
-    const model = genAI.getGenerativeModel({
-      model: "gemini-1.5-flash",
-      systemInstruction: `${SYSTEM_PROMPT}\n\n${userContext}`,
-      generationConfig: {
+    const chatSession = ai.chats.create({
+      model: "gemini-2.0-flash",
+      config: {
+        systemInstruction: `${SYSTEM_PROMPT}\n\n${userContext}`,
         maxOutputTokens: 512,
         temperature: 0.7,
       },
+      history,
     });
 
-    // Start chat with existing history
-    const chatSession = model.startChat({ history });
-
-    const result = await chatSession.sendMessage(message);
-    const reply  = result.response.text();
+    const result = await chatSession.sendMessage({ message });
+    const reply  = result.text ?? "I'm unable to respond right now. Please try again.";
 
     return successResponse(res, { reply }, "OK");
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("[chat] Gemini error:", msg);
 
-    if (msg.includes("API_KEY") || msg.includes("API key")) {
-      return errorResponse(res, "AI service misconfigured — invalid API key.", 503);
+    if (msg.includes("API_KEY") || msg.includes("API key") || msg.includes("UNAUTHENTICATED")) {
+      return errorResponse(res, "AI service misconfigured — check GEMINI_API_KEY.", 503);
     }
     if (msg.includes("quota") || msg.includes("RESOURCE_EXHAUSTED")) {
       return errorResponse(res, "AI service quota exceeded. Please try again later.", 503);
     }
-    if (msg.includes("SAFETY")) {
-      return errorResponse(res, "Your message was blocked by safety filters. Please rephrase.", 400);
-    }
-    // Return the actual error message in development for easier debugging
     return errorResponse(res, `AI error: ${msg}`, 500);
   }
 }
