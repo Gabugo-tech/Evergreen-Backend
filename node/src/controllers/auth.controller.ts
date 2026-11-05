@@ -172,7 +172,7 @@ export async function login(req: Request, res: Response, next: NextFunction) {
 
     const { data: user, error } = await supabase
       .from("users")
-      .select("id, email, full_name, account_type, kyc_status, password_hash")
+      .select("id, email, full_name, account_type, kyc_status, is_active, password_hash")
       .eq("email", email)
       .single();
 
@@ -180,6 +180,8 @@ export async function login(req: Request, res: Response, next: NextFunction) {
 
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) return errorResponse(res, "Invalid credentials", 401);
+
+    if (!user.is_active) return errorResponse(res, "Your account has been suspended. Please contact support.", 403);
 
     const { password_hash: _, ...safeUser } = user;
     const token = signToken(user.id, user.email);

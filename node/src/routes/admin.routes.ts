@@ -19,7 +19,9 @@ router.get("/transactions", ctrl.listAllTransactions);
 router.get("/visitors",     ctrl.listVisitors);
 router.get("/account",      ctrl.getAdminAccount);
 router.get("/transfers",    ctrl.listAdminTransfers);
-router.delete("/users/:id", ctrl.deleteUser);
+router.patch("/users/:id/suspend",   ctrl.suspendUser);
+router.patch("/users/:id/unsuspend", ctrl.unsuspendUser);
+router.delete("/users/:id",          ctrl.deleteUser);
 router.post("/test-email",  ctrl.testEmail);
 
 export default router;

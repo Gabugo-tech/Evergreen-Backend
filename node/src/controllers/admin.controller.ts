@@ -206,6 +206,67 @@ export async function logVisitor(req: AuthRequest, res: Response, next: NextFunc
   } catch (err) { next(err); }
 }
 
+// ─── Suspend user (admin) ─────────────────────────────────────────────────────
+export async function suspendUser(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    if (!isAdmin(req)) return errorResponse(res, "Forbidden", 403);
+
+    const { id } = req.params;
+    if (!id) return errorResponse(res, "User ID required", 400);
+
+    const supabase = getSupabase();
+
+    const { data: target, error: findErr } = await supabase
+      .from("users")
+      .select("id, email, is_active")
+      .eq("id", id)
+      .single();
+
+    if (findErr || !target) return errorResponse(res, "User not found", 404);
+    if (target.email.toLowerCase() === ADMIN_EMAIL) {
+      return errorResponse(res, "Cannot suspend the admin account", 403);
+    }
+    if (!target.is_active) return errorResponse(res, "User is already suspended", 400);
+
+    const { error } = await supabase
+      .from("users")
+      .update({ is_active: false, updated_at: new Date().toISOString() })
+      .eq("id", id);
+
+    if (error) throw new AppError(error.message, 500);
+    return successResponse(res, { id, is_active: false }, "User suspended");
+  } catch (err) { next(err); }
+}
+
+// ─── Unsuspend user (admin) ───────────────────────────────────────────────────
+export async function unsuspendUser(req: AuthRequest, res: Response, next: NextFunction) {
+  try {
+    if (!isAdmin(req)) return errorResponse(res, "Forbidden", 403);
+
+    const { id } = req.params;
+    if (!id) return errorResponse(res, "User ID required", 400);
+
+    const supabase = getSupabase();
+
+    const { data: target, error: findErr } = await supabase
+      .from("users")
+      .select("id, email, is_active")
+      .eq("id", id)
+      .single();
+
+    if (findErr || !target) return errorResponse(res, "User not found", 404);
+    if (target.is_active) return errorResponse(res, "User is not suspended", 400);
+
+    const { error } = await supabase
+      .from("users")
+      .update({ is_active: true, updated_at: new Date().toISOString() })
+      .eq("id", id);
+
+    if (error) throw new AppError(error.message, 500);
+    return successResponse(res, { id, is_active: true }, "User unsuspended");
+  } catch (err) { next(err); }
+}
+
 // ─── Delete user (admin) ──────────────────────────────────────────────────────
 export async function deleteUser(req: AuthRequest, res: Response, next: NextFunction) {
   try {
