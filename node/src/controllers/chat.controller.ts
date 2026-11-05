@@ -105,7 +105,7 @@ export async function chat(req: AuthRequest, res: Response, next: NextFunction) 
     const userContext = await getUserContext(userId);
 
     const chatSession = ai.chats.create({
-      model: "gemini-2.0-flash",
+      model: "gemini-1.5-flash",
       config: {
         systemInstruction: `${SYSTEM_PROMPT}\n\n${userContext}`,
         maxOutputTokens: 512,
