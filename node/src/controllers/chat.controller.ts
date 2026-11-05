@@ -121,11 +121,19 @@ export async function chat(req: AuthRequest, res: Response, next: NextFunction) 
 
     return successResponse(res, { reply }, "OK");
   } catch (err) {
-    // Surface Gemini-specific errors clearly
-    const msg = err instanceof Error ? err.message : "AI service unavailable";
-    if (msg.includes("API_KEY") || msg.includes("quota")) {
-      return errorResponse(res, "AI service temporarily unavailable. Please try again later.", 503);
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("[chat] Gemini error:", msg);
+
+    if (msg.includes("API_KEY") || msg.includes("API key")) {
+      return errorResponse(res, "AI service misconfigured — invalid API key.", 503);
     }
-    next(err);
+    if (msg.includes("quota") || msg.includes("RESOURCE_EXHAUSTED")) {
+      return errorResponse(res, "AI service quota exceeded. Please try again later.", 503);
+    }
+    if (msg.includes("SAFETY")) {
+      return errorResponse(res, "Your message was blocked by safety filters. Please rephrase.", 400);
+    }
+    // Return the actual error message in development for easier debugging
+    return errorResponse(res, `AI error: ${msg}`, 500);
   }
 }
