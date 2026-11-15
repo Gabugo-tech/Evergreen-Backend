@@ -32,22 +32,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
-    description="""
-## Evergreen Analytics API
-
-Python/FastAPI microservice providing data analytics, investment insights,
-and AI-powered financial analysis for the Evergreen fintech platform.
-
-### Capabilities
-- Spending analysis by category and time period
-- Portfolio performance metrics (return, Sharpe ratio, volatility)
-- Asset allocation breakdown
-- Portfolio history for charting
-- Net worth aggregation
-- Investment holdings CRUD
-    """,
-    docs_url="/docs",
-    redoc_url="/redoc",
+    description="Evergreen Analytics API — internal microservice.",
+    # Disable interactive docs and schema exposure in production
+    docs_url="/docs" if settings.DEBUG else None,
+    redoc_url="/redoc" if settings.DEBUG else None,
+    openapi_url="/openapi.json" if settings.DEBUG else None,
     lifespan=lifespan,
 )
 

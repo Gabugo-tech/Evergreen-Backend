@@ -70,12 +70,7 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 app.get("/api/health", (_req, res) => {
-  res.json({
-    status:  "healthy",
-    service: "evergreen-api-gateway",
-    version: "1.0.0",
-    timestamp: new Date().toISOString(),
-  });
+  res.json({ status: "healthy", timestamp: new Date().toISOString() });
 });
 
 app.use("/api/auth",          authLimiter, authRoutes);

@@ -20,6 +20,14 @@ export const authLimiter = rateLimit({
   message: { error: "Too many auth attempts. Please try again in 15 minutes." },
 });
 
+/** Registration limiter — 5 accounts per hour per IP to prevent mass registration */
+export const registerLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  ...rateLimitOptions,
+  message: { error: "Too many registration attempts. Please try again later." },
+});
+
 /** OTP endpoints — strict 5 req / 15 min to prevent brute-force */
 export const otpLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,

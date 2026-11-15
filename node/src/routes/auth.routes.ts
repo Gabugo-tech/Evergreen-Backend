@@ -1,12 +1,12 @@
 import { Router } from "express";
 import { authenticate } from "../middleware/auth";
-import { otpLimiter } from "../middleware/limiters";
+import { otpLimiter, registerLimiter } from "../middleware/limiters";
 import * as ctrl from "../controllers/auth.controller";
 
 const router = Router();
 
 // ── Public routes ─────────────────────────────────────────────────────────────
-router.post("/register",       ctrl.register);
+router.post("/register",       registerLimiter, ctrl.register);  // 5/hr per IP
 router.post("/login",          ctrl.login);
 router.post("/logout",         ctrl.logout);
 router.post("/refresh",        ctrl.refresh);

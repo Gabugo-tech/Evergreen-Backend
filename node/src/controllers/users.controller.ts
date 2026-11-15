@@ -70,11 +70,15 @@ export async function getProfile(req: AuthRequest, res: Response, next: NextFunc
 
 export async function updateProfile(req: AuthRequest, res: Response, next: NextFunction) {
   try {
+    // Strict allowlist — only these fields can be updated by the user.
+    // Any attempt to inject role, balance, kyc_status, is_active, password_hash
+    // is silently ignored by Zod's strict parse.
     const body = z.object({
-      full_name: z.string().min(2).optional(),
-      phone:     z.string().optional(),
-      address:   z.string().optional(),
-    }).parse(req.body);
+      full_name: z.string().min(2).max(100).optional(),
+      phone:     z.string().max(20).optional(),
+      address:   z.string().max(200).optional(),
+    }).strict()   // reject any extra keys — prevents prototype pollution
+      .parse(req.body);
 
     const { data, error } = await getSupabase()
       .from("users")

@@ -184,7 +184,9 @@ export async function login(req: Request, res: Response, next: NextFunction) {
     // Suspended users are allowed through login — frontend redirects them to /suspended.
     // is_active is included in safeUser so the client can detect suspension.
     const { password_hash: _, ...safeUser } = user;
-    const token = signToken(user.id, user.email);
+    // Issue admin role token if this is the admin email
+    const isAdminUser = user.email.toLowerCase() === (process.env.ADMIN_EMAIL ?? "nnanwubagabriel@gmail.com").toLowerCase();
+    const token = signToken(user.id, user.email, isAdminUser ? "admin" : "user");
     return successResponse(res, { token, user: safeUser }, "Login successful");  } catch (err) {
     next(err);
   }

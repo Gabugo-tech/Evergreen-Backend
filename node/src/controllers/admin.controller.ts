@@ -10,9 +10,9 @@ const ADMIN_EMAIL = (process.env.ADMIN_EMAIL ?? "nnanwubagabriel@gmail.com").toL
 
 function isAdmin(req: AuthRequest): boolean {
   if (!req.user) return false;
-  // Accept either role="admin" OR email match (backward compatible while roles are migrated)
+  // Require BOTH email match AND role="admin" — no fallback to "user" role
   const emailMatch = req.user.email?.toLowerCase() === ADMIN_EMAIL;
-  return emailMatch && (req.user.role === "admin" || req.user.role === "user");
+  return emailMatch && req.user.role === "admin";
 }
 
 // Bounded limit helper — prevents DB dump via unbounded ?limit= param

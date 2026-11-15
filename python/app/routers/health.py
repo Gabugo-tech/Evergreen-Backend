@@ -8,10 +8,8 @@ settings = get_settings()
 
 @router.get("/health")
 async def health():
+    # Minimal response — no version or service name disclosure
     return {
-        "status":      "healthy",
-        "service":     "evergreen-analytics-api",
-        "version":     settings.APP_VERSION,
-        "environment": settings.ENVIRONMENT,
-        "timestamp":   datetime.utcnow().isoformat(),
+        "status":    "healthy",
+        "timestamp": datetime.utcnow().isoformat(),
     }
