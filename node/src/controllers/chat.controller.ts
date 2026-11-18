@@ -1,7 +1,7 @@
 /**
- * AI Chat controller — powered by OpenRouter (Qwen/qwen3-235b-a22b via OpenAI-compatible API).
- * Model: qwen/qwen3-235b-a22b (free tier available on OpenRouter)
- * API key: OPENROUTER_API_KEY in Railway env
+ * AI Chat controller — powered by Groq (qwen-qwq-32b via OpenAI-compatible API).
+ * Model: qwen-qwq-32b — fast inference on Groq hardware
+ * API key: GROQ_API_KEY in Railway env
  */
 import { Response, NextFunction } from "express";
 import { z } from "zod";
@@ -9,8 +9,8 @@ import { getSupabase } from "../services/supabase";
 import { AuthRequest } from "../middleware/auth";
 import { successResponse, errorResponse } from "../utils/response";
 
-if (!process.env.OPENROUTER_API_KEY) {
-  console.warn("[chat] OPENROUTER_API_KEY not set — AI chat will fail");
+if (!process.env.GROQ_API_KEY) {
+  console.warn("[chat] GROQ_API_KEY not set — AI chat will fail");
 }
 
 const messageSchema = z.object({
@@ -108,16 +108,14 @@ export async function chat(req: AuthRequest, res: Response, next: NextFunction) 
     // Retry up to 3 times for transient 503s
     let reply = "";
     for (let attempt = 1; attempt <= 3; attempt++) {
-      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "Authorization": `Bearer ${process.env.GROQ_API_KEY}`,
           "Content-Type":  "application/json",
-          "HTTP-Referer":  "https://evergreen-world-bank.vercel.app",
-          "X-Title":       "Evergreen Bank",
         },
         body: JSON.stringify({
-          model:       "qwen/qwen3-235b-a22b:free",
+          model:       "qwen-qwq-32b",
           messages,
           max_tokens:  512,
           temperature: 0.7,
@@ -131,7 +129,7 @@ export async function chat(req: AuthRequest, res: Response, next: NextFunction) 
 
       if (!response.ok) {
         const err = await response.json().catch(() => ({})) as { error?: { message?: string } };
-        const msg = err?.error?.message ?? `OpenRouter error ${response.status}`;
+        const msg = err?.error?.message ?? `Groq error ${response.status}`;
         throw new Error(msg);
       }
 
@@ -147,7 +145,7 @@ export async function chat(req: AuthRequest, res: Response, next: NextFunction) 
     return successResponse(res, { reply }, "OK");
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error("[chat] OpenRouter error:", msg);
+    console.error("[chat] Groq error:", msg);
 
     if (msg.includes("API key") || msg.includes("401") || msg.includes("403")) {
       return errorResponse(res, "AI service misconfigured. Please contact support.", 503);
