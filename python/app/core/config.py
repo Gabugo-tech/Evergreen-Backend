@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     JWT_SECRET: str
     JWT_ALGORITHM: str = "HS256"
 
+    # Internal service secret — Node gateway must send this header on every request
+    # Set INTERNAL_API_SECRET to a random 32+ char string in Railway
+    INTERNAL_API_SECRET: str = ""
+
     # CORS
     FRONTEND_URL: str = "http://localhost:3000"
     NODE_GATEWAY_URL: str = "http://localhost:4000"

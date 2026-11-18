@@ -21,8 +21,7 @@ limiter = Limiter(key_func=get_remote_address, default_limits=["120/minute"])
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info(
-        "🌿 Evergreen Analytics API starting",
-        version=settings.APP_VERSION,
+        "Evergreen Analytics API starting",
         env=settings.ENVIRONMENT,
     )
     yield
@@ -49,10 +48,37 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_headers=["Authorization", "Content-Type", "X-Internal-Secret"],
 )
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+
+# ─── Internal secret gate ─────────────────────────────────────────────────────
+# All /api/* routes must come via the Node gateway which sends X-Internal-Secret.
+# This prevents direct calls to the analytics service from the internet.
+@app.middleware("http")
+async def require_internal_secret(request: Request, call_next):
+    # Health check is exempt
+    if request.url.path in ("/health", "/"):
+        return await call_next(request)
+
+    # Only enforce when INTERNAL_API_SECRET is configured (not empty)
+    secret = settings.INTERNAL_API_SECRET
+    if secret:
+        incoming = request.headers.get("x-internal-secret", "")
+        if incoming != secret:
+            logger.warning(
+                "blocked_direct_access",
+                path=request.url.path,
+                ip=request.client.host if request.client else "unknown",
+            )
+            return JSONResponse(
+                status_code=403,
+                content={"success": False, "message": "Forbidden"},
+            )
+
+    return await call_next(request)
 
 
 # ─── Request logging ──────────────────────────────────────────────────────────

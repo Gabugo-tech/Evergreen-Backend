@@ -1,22 +1,23 @@
+/**
+ * AI Chat controller — powered by OpenRouter (Qwen/qwen3-235b-a22b via OpenAI-compatible API).
+ * Model: qwen/qwen3-235b-a22b (free tier available on OpenRouter)
+ * API key: OPENROUTER_API_KEY in Railway env
+ */
 import { Response, NextFunction } from "express";
-import { GoogleGenAI } from "@google/genai";
 import { z } from "zod";
 import { getSupabase } from "../services/supabase";
 import { AuthRequest } from "../middleware/auth";
 import { successResponse, errorResponse } from "../utils/response";
 
-if (!process.env.GEMINI_API_KEY) {
-  console.warn("[chat] GEMINI_API_KEY not set — AI chat will fail");
+if (!process.env.OPENROUTER_API_KEY) {
+  console.warn("[chat] OPENROUTER_API_KEY not set — AI chat will fail");
 }
-
-// New SDK — supports both AIza and AQ. key formats
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY ?? "" });
 
 const messageSchema = z.object({
   message: z.string().min(1).max(1000),
   history: z.array(z.object({
-    role: z.enum(["user", "model"]),
-    parts: z.array(z.object({ text: z.string() })),
+    role: z.enum(["user", "assistant"]),
+    content: z.string(),
   })).max(20).optional().default([]),
 });
 
@@ -31,20 +32,14 @@ About Evergreen Bank:
 - Payment PIN is required for all transfers
 - Customer support email: evergreenworldbank@gmail.com
 
-Your capabilities:
-- Answer questions about account features, transfers, fees, and policies
-- Help users understand their account status and transactions
-- Guide users through common tasks (how to send money, reset PIN, etc.)
-- Provide context-aware answers using the user's account data provided below
-
 Rules:
 - Keep responses concise — 2-4 sentences max unless a step-by-step guide is needed
 - Never reveal or guess account PINs, passwords, or sensitive credentials
-- For issues you can't resolve, direct users to evergreenworldbank@gmail.com
+- For issues you cannot resolve, direct users to evergreenworldbank@gmail.com
 - Always be warm, helpful, and professional
 - Format using plain text only — no markdown, no asterisks, no bullet symbols
 - If asked about balances or transactions, use the real data provided in the context
-- If a user says they did not receive an OTP or email alert, always tell them to check their spam or junk folder first, as emails from Evergreen may be filtered there. If it's still not there after checking, advise them to contact support at evergreenworldbank@gmail.com`;
+- If a user says they did not receive an OTP or email alert, always tell them to check their spam or junk folder first, as emails from Evergreen may be filtered there. If still missing, advise them to contact support at evergreenworldbank@gmail.com`;
 
 async function getUserContext(userId: string): Promise<string> {
   const supabase = getSupabase();
@@ -62,13 +57,13 @@ async function getUserContext(userId: string): Promise<string> {
       .eq("is_active", true),
     supabase
       .from("transactions")
-      .select("type, amount, currency, description, status, created_at, recipient_name")
+      .select("type, amount, currency, description, status, created_at")
       .eq("user_id", userId)
       .order("created_at", { ascending: false })
       .limit(5),
   ]);
 
-  const lines: string[] = ["--- USER CONTEXT (use this to answer account-specific questions) ---"];
+  const lines: string[] = ["--- USER CONTEXT ---"];
 
   if (profileRes.status === "fulfilled" && profileRes.value.data) {
     const p = profileRes.value.data;
@@ -80,7 +75,7 @@ async function getUserContext(userId: string): Promise<string> {
   if (accountsRes.status === "fulfilled" && accountsRes.value.data?.length) {
     lines.push("Accounts:");
     for (const a of accountsRes.value.data) {
-      lines.push(`  - ${a.currency} ${a.account_type} account (#${a.account_number}): balance ${Number(a.balance).toLocaleString(undefined, { minimumFractionDigits: 2 })} ${a.currency}${a.is_primary ? " (primary)" : ""}`);
+      lines.push(`  - ${a.currency} ${a.account_type} (#${a.account_number}): balance ${Number(a.balance).toLocaleString(undefined, { minimumFractionDigits: 2 })} ${a.currency}${a.is_primary ? " (primary)" : ""}`);
     }
   }
 
@@ -104,48 +99,65 @@ export async function chat(req: AuthRequest, res: Response, next: NextFunction) 
 
     const userContext = await getUserContext(userId);
 
-    const chatSession = ai.chats.create({
-      model: "gemini-3.8-flash",
-      config: {
-        systemInstruction: `${SYSTEM_PROMPT}\n\n${userContext}`,
-        maxOutputTokens: 512,
-        temperature: 0.7,
-      },
-      history,
-    });
+    const messages = [
+      { role: "system",    content: `${SYSTEM_PROMPT}\n\n${userContext}` },
+      ...history,
+      { role: "user",      content: message },
+    ];
 
-    // Retry up to 3 times with exponential backoff for transient 503s
-    let result;
+    // Retry up to 3 times for transient 503s
+    let reply = "";
     for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        result = await chatSession.sendMessage({ message });
-        break;
-      } catch (retryErr) {
-        const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
-        const isTransient = retryMsg.includes("503") || retryMsg.includes("UNAVAILABLE") || retryMsg.includes("high demand");
-        if (isTransient && attempt < 3) {
-          await new Promise(r => setTimeout(r, attempt * 1500));
-          continue;
-        }
-        throw retryErr;
+      const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${process.env.OPENROUTER_API_KEY}`,
+          "Content-Type":  "application/json",
+          "HTTP-Referer":  "https://evergreen-world-bank.vercel.app",
+          "X-Title":       "Evergreen Bank",
+        },
+        body: JSON.stringify({
+          model:       "qwen/qwen3-235b-a22b:free",
+          messages,
+          max_tokens:  512,
+          temperature: 0.7,
+        }),
+      });
+
+      if (response.status === 503 && attempt < 3) {
+        await new Promise(r => setTimeout(r, attempt * 1500));
+        continue;
       }
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({})) as { error?: { message?: string } };
+        const msg = err?.error?.message ?? `OpenRouter error ${response.status}`;
+        throw new Error(msg);
+      }
+
+      const data = await response.json() as {
+        choices: { message: { content: string } }[];
+      };
+      reply = data.choices?.[0]?.message?.content?.trim() ?? "";
+      break;
     }
-    const reply = result?.text ?? "I'm unable to respond right now. Please try again.";
+
+    if (!reply) reply = "I am unable to respond right now. Please try again or contact support at evergreenworldbank@gmail.com.";
 
     return successResponse(res, { reply }, "OK");
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error("[chat] Gemini error:", msg);
+    console.error("[chat] OpenRouter error:", msg);
 
-    if (msg.includes("API_KEY") || msg.includes("API key") || msg.includes("UNAUTHENTICATED")) {
-      return errorResponse(res, "AI service misconfigured — check GEMINI_API_KEY.", 503);
+    if (msg.includes("API key") || msg.includes("401") || msg.includes("403")) {
+      return errorResponse(res, "AI service misconfigured. Please contact support.", 503);
     }
-    if (msg.includes("quota") || msg.includes("RESOURCE_EXHAUSTED")) {
-      return errorResponse(res, "AI service quota exceeded. Please try again later.", 503);
+    if (msg.includes("quota") || msg.includes("429") || msg.includes("rate limit")) {
+      return errorResponse(res, "AI service is busy. Please try again in a moment.", 503);
     }
-    if (msg.includes("UNAVAILABLE") || msg.includes("high demand")) {
-      return errorResponse(res, "Aria is experiencing high demand right now. Please try again in a moment.", 503);
+    if (msg.includes("503") || msg.includes("UNAVAILABLE")) {
+      return errorResponse(res, "Aria is experiencing high demand. Please try again in a moment.", 503);
     }
-    return errorResponse(res, `AI error: ${msg}`, 500);
+    return errorResponse(res, "AI service temporarily unavailable.", 503);
   }
 }

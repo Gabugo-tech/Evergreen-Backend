@@ -57,7 +57,7 @@ export async function getProfile(req: AuthRequest, res: Response, next: NextFunc
   try {
     const { data, error } = await getSupabase()
       .from("users")
-      .select("id, email, full_name, phone, avatar_url, account_type, kyc_status, created_at")
+      .select("id, email, full_name, phone, avatar_url, account_type, kyc_status, is_active, created_at")
       .eq("id", req.user!.id)
       .single();
 
