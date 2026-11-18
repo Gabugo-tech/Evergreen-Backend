@@ -115,7 +115,7 @@ export async function chat(req: AuthRequest, res: Response, next: NextFunction) 
           "Content-Type":  "application/json",
         },
         body: JSON.stringify({
-          model:       "qwen-qwq-32b",
+          model:       "qwen/qwen3.8-27b",
           messages,
           max_tokens:  512,
           temperature: 0.7,
@@ -130,6 +130,7 @@ export async function chat(req: AuthRequest, res: Response, next: NextFunction) 
       if (!response.ok) {
         const err = await response.json().catch(() => ({})) as { error?: { message?: string } };
         const msg = err?.error?.message ?? `Groq error ${response.status}`;
+        console.error("[chat] Groq HTTP error:", response.status, JSON.stringify(err));
         throw new Error(msg);
       }
 
